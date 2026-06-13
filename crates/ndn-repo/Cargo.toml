@@ -8,6 +8,12 @@ license.workspace = true
 [package.metadata.scope]
 classification = "extension"
 
+[features]
+# Durable on-disk DataStore backend (native). On by default; disable for a
+# target-agnostic, codec-only build (e.g. wasm).
+default = ["fjall-store"]
+fjall-store = ["dep:fjall"]
+
 [dependencies]
 ndn-tlv    = { workspace = true, features = ["std"] }
 ndn-packet = { workspace = true, features = ["std"] }
@@ -17,6 +23,8 @@ tokio      = { workspace = true, features = ["sync", "rt", "macros"] }
 tokio-util = { workspace = true }
 thiserror  = { workspace = true }
 tracing    = { workspace = true }
+fjall      = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tempfile   = "3"

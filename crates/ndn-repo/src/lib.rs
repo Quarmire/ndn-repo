@@ -20,8 +20,13 @@
 //! (replication, capacity-aware placement, heartbeat failover — cf.
 //! `a-thieme/repo`) is a coordination layer above this single-node core.
 
+pub mod ingest;
 pub mod repo;
+pub mod store;
 pub mod tlv;
 
+pub use ingest::ingest_group;
+#[cfg(feature = "fjall-store")]
+pub use store::FjallStore;
 pub use repo::{Repo, RepoError};
 pub use tlv::{BlobFetch, RepoCmd, RepoCmdRes, SyncJoin, SyncLeave, sync_protocol_svs_v3};
