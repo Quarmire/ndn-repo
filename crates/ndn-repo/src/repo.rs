@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ndn_packet::{Data, Name};
+use ndn_security::{Unverified, Validator};
 use ndn_sync::DataStore;
 
 use crate::tlv::{RepoCmd, RepoCmdRes, SyncJoin, SyncLeave, sync_protocol_svs_v3};
@@ -37,15 +38,35 @@ struct RepoInner {
     /// Names requested by `BlobFetch` (by name) that the embedder must fetch
     /// from the network and feed back via [`Repo::store_data`].
     pending_fetches: Mutex<Vec<Name>>,
+    /// Optional trust gate: when set, only Data that authenticates against this
+    /// validator is ingested (fail-closed). `None` = ingest anything (the
+    /// open / testbed default, matching ndnd's `IgnoreValidity`).
+    validator: Option<Arc<Validator>>,
 }
 
 impl Repo {
     pub fn new(store: Arc<dyn DataStore>) -> Self {
+        Self::with_optional_validator(store, None)
+    }
+
+    /// A repo that **only ingests Data verifiable against `validator`** — a
+    /// node should not durably hold (and re-serve) data it can't authenticate,
+    /// or it becomes a cache-poisoning amplifier. Build the validator from the
+    /// group's trust anchors.
+    pub fn with_validator(store: Arc<dyn DataStore>, validator: Arc<Validator>) -> Self {
+        Self::with_optional_validator(store, Some(validator))
+    }
+
+    fn with_optional_validator(
+        store: Arc<dyn DataStore>,
+        validator: Option<Arc<Validator>>,
+    ) -> Self {
         Self {
             inner: Arc::new(RepoInner {
                 store,
                 groups: Mutex::new(BTreeSet::new()),
                 pending_fetches: Mutex::new(Vec::new()),
+                validator,
             }),
         }
     }
@@ -54,6 +75,22 @@ impl Repo {
     /// fetched publications land here and the SVS demux serves them.
     pub fn store(&self) -> Arc<dyn DataStore> {
         Arc::clone(&self.inner.store)
+    }
+
+    /// The fail-closed ingestion gate for this repo's trust policy, as an
+    /// [`ndn_sync::IngestValidator`] to install on a group's `SvSync`. `None`
+    /// when the repo ingests without verification.
+    pub fn ingest_validator(&self) -> Option<ndn_sync::IngestValidator> {
+        let validator = Arc::clone(self.inner.validator.as_ref()?);
+        Some(Arc::new(move |wire: Bytes| {
+            let validator = Arc::clone(&validator);
+            Box::pin(async move {
+                match Data::decode(wire) {
+                    Ok(data) => Unverified::new(data).verify(&validator).await.is_ok(),
+                    Err(_) => false,
+                }
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+        }))
     }
 
     /// Process a command (`ApplicationParameters` value) and return the reply.
@@ -223,5 +260,33 @@ mod tests {
     fn malformed_command_is_400() {
         let repo = repo();
         assert_eq!(repo.handle_command(&[0xFF, 0x00]).status, 400);
+    }
+
+    #[tokio::test]
+    async fn ingest_validator_reflects_trust_policy() {
+        use ndn_packet::encode::DataBuilder;
+        use ndn_security::{TrustSchema, Validator};
+
+        // A plain (DigestSha256) Data — integrity only, no trusted identity.
+        let wire = DataBuilder::new("/g/x/v=1".parse::<Name>().unwrap(), b"hi").build();
+
+        // No validator → no gate (open ingestion, ndnd's IgnoreValidity).
+        assert!(Repo::new(Arc::new(MemoryStore::new())).ingest_validator().is_none());
+
+        // A validator-equipped repo gates ingestion on real authentication: an
+        // unauthenticated (digest-only) Data is rejected even under accept-all,
+        // because there is no signing identity to admit — the fail-closed
+        // property that keeps the repo from durably re-serving unverifiable data.
+        for schema in [TrustSchema::new(), TrustSchema::accept_all()] {
+            let repo = Repo::with_validator(
+                Arc::new(MemoryStore::new()),
+                Arc::new(Validator::new(schema)),
+            );
+            let gate = repo.ingest_validator().expect("validator present");
+            assert!(
+                !gate(wire.clone()).await,
+                "a configured validator must reject unauthenticated Data"
+            );
+        }
     }
 }

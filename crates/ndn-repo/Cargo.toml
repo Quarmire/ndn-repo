@@ -18,10 +18,11 @@ fjall-store = ["dep:fjall"]
 bin = ["fjall-store", "dep:ndn-app", "dep:ndn-ipc", "dep:anyhow", "dep:tracing-subscriber"]
 
 [dependencies]
-ndn-tlv    = { workspace = true, features = ["std"] }
-ndn-packet = { workspace = true, features = ["std"] }
-ndn-sync   = { workspace = true }
-bytes      = { workspace = true, features = ["std"] }
+ndn-tlv      = { workspace = true, features = ["std"] }
+ndn-packet   = { workspace = true, features = ["std"] }
+ndn-sync     = { workspace = true }
+ndn-security = { workspace = true }
+bytes        = { workspace = true, features = ["std"] }
 tokio      = { workspace = true, features = ["sync", "rt", "macros"] }
 tokio-util = { workspace = true }
 thiserror  = { workspace = true }

@@ -226,6 +226,10 @@ impl RepoService {
             net_in_rx,
             self.config.svs.clone(),
         );
+        // Fail-closed trust: only verifiable Data is ingested (when configured).
+        if let Some(v) = self.repo.ingest_validator() {
+            svs.set_ingest_validator(v);
+        }
         let updates: mpsc::Receiver<SyncUpdate> = svs.take_updates();
         let svs = Arc::new(svs);
         let group_cancel = self.cancel.child_token();
