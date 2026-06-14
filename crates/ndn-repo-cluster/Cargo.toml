@@ -21,4 +21,9 @@ tracing    = { workspace = true }
 web-time   = { workspace = true }
 
 [dev-dependencies]
-tokio      = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio           = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+ndn-engine      = { workspace = true }
+ndn-app         = { workspace = true }
+ndn-face-native = { workspace = true }
+ndn-strategy    = { workspace = true }
+ndn-transport   = { workspace = true }

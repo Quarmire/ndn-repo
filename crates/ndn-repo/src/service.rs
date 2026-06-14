@@ -55,6 +55,15 @@ impl Default for RepoServiceConfig {
     }
 }
 
+/// Out-of-band control over a running [`RepoService`] — e.g. a distributed
+/// coordinator ([`ndn-repo-cluster`]) telling this node to start/stop holding
+/// a group, without going through the on-wire command interface.
+#[derive(Clone, Debug)]
+pub enum RepoControl {
+    Join(Name),
+    Leave(Name),
+}
+
 struct GroupHandle {
     /// Inbound channel feeding this group's `SvSync` (sync Interests + replies).
     net_in: mpsc::Sender<Bytes>,
@@ -76,6 +85,8 @@ pub struct RepoService {
     /// command prefix + each joined group) are sent here for the embedder to
     /// register. Lets dynamic `SyncJoin`s become reachable.
     register_tx: Option<mpsc::Sender<Name>>,
+    /// Out-of-band join/leave control (e.g. from a cluster coordinator).
+    control_rx: Option<mpsc::Receiver<RepoControl>>,
 }
 
 impl RepoService {
@@ -93,7 +104,15 @@ impl RepoService {
             cancel: CancellationToken::new(),
             groups: HashMap::new(),
             register_tx: None,
+            control_rx: None,
         }
+    }
+
+    /// Drive group join/leave out-of-band (e.g. from `ndn-repo-cluster`'s
+    /// coordinator deciding this node should replicate a target).
+    pub fn with_control(mut self, control_rx: mpsc::Receiver<RepoControl>) -> Self {
+        self.control_rx = Some(control_rx);
+        self
     }
 
     /// Receive the prefixes (command prefix + each joined group) the forwarder
@@ -126,6 +145,7 @@ impl RepoService {
         for group in self.config.initial_groups.clone() {
             self.start_group(group).await;
         }
+        let mut control_rx = self.control_rx.take();
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => break,
@@ -133,6 +153,16 @@ impl RepoService {
                     let Some(raw) = maybe else { break };
                     self.dispatch(raw).await;
                 }
+                ctl = async {
+                    match &mut control_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match ctl {
+                    Some(RepoControl::Join(group)) => self.start_group(group).await,
+                    Some(RepoControl::Leave(group)) => self.stop_group(&group),
+                    None => {}
+                },
             }
         }
         for (_, g) in self.groups.drain() {

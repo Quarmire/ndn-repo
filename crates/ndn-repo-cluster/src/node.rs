@@ -254,9 +254,11 @@ mod tests {
             }
         }
 
-        /// Live claimants for `target` as seen by node 0 (the views converge).
+        /// Live claimants for `target` as seen by a *surviving* node (a dead
+        /// node's view freezes at its death, so it must not be the observer).
         fn live_claimants(&self, target: &str) -> usize {
-            self.nodes[0].state().live_claimants(&n(target), self.now).len()
+            let alive = self.alive.iter().position(|&a| a).expect("a node is alive");
+            self.nodes[alive].state().live_claimants(&n(target), self.now).len()
         }
     }
 
@@ -284,10 +286,10 @@ mod tests {
         }
         assert_eq!(sim.live_claimants("/obj/data"), 3);
 
-        // Find a current claimant and kill it.
+        // Find a current claimant and kill it (node 0 is alive here).
         let claimants = sim.nodes[0].state().live_claimants(&n("/obj/data"), sim.now);
-        let victim = &claimants[0];
-        let victim_idx = sim.nodes.iter().position(|node| node.self_id() == victim).unwrap();
+        let victim = claimants[0].clone();
+        let victim_idx = sim.nodes.iter().position(|node| *node.self_id() == victim).unwrap();
         sim.kill(victim_idx);
 
         // Let the dead node age out (>3 rounds of silence) and survivors react.
@@ -299,9 +301,10 @@ mod tests {
             3,
             "a survivor re-replicated the dead node's share back to the factor"
         );
-        // The victim is no longer a live claimant.
-        let now_claimants = sim.nodes[0].state().live_claimants(&n("/obj/data"), sim.now);
-        assert!(!now_claimants.contains(victim));
+        // The victim is no longer a live claimant (as a survivor sees it).
+        let observer = sim.alive.iter().position(|&a| a).unwrap();
+        let now_claimants = sim.nodes[observer].state().live_claimants(&n("/obj/data"), sim.now);
+        assert!(!now_claimants.contains(&victim));
     }
 
     #[test]

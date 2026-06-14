@@ -27,7 +27,7 @@ pub mod store;
 pub mod tlv;
 
 pub use ingest::ingest_group;
-pub use service::{RepoService, RepoServiceConfig};
+pub use service::{RepoControl, RepoService, RepoServiceConfig};
 #[cfg(feature = "fjall-store")]
 pub use store::FjallStore;
 pub use repo::{Repo, RepoError};
