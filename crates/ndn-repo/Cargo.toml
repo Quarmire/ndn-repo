@@ -15,7 +15,7 @@ default = ["fjall-store"]
 fjall-store = ["dep:fjall"]
 # The runnable `ndn-repo` daemon (Unix-socket IPC to a forwarder). Off by
 # default so the library stays light; build with `--features bin`.
-bin = ["fjall-store", "dep:ndn-app", "dep:ndn-ipc", "dep:anyhow", "dep:tracing-subscriber"]
+bin = ["fjall-store", "dep:ndn-app", "dep:ndn-ipc", "dep:ndn-ipc-shm", "dep:anyhow", "dep:tracing-subscriber"]
 
 [dependencies]
 ndn-tlv      = { workspace = true, features = ["std"] }
@@ -31,6 +31,7 @@ fjall      = { workspace = true, optional = true }
 # Daemon-only (feature `bin`).
 ndn-app            = { workspace = true, optional = true }
 ndn-ipc            = { workspace = true, optional = true }
+ndn-ipc-shm        = { workspace = true, optional = true }
 anyhow             = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 

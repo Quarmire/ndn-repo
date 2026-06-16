@@ -36,7 +36,9 @@ async fn main() -> anyhow::Result<()> {
     );
     let repo = Repo::new(store);
 
-    // Connect to the forwarder.
+    // Connect to the forwarder. Light up the SHM data plane if the router
+    // offers one (no-op fallback to the Unix socket otherwise).
+    ndn_ipc_shm::install();
     let client = ForwarderClient::connect(&cfg.socket)
         .await
         .map_err(|e| anyhow::anyhow!("connect {}: {e}", cfg.socket))?;
