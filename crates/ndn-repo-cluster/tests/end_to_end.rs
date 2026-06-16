@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use ndn_app::connection::{Connection, InProcConnection};
 use ndn_engine::{EngineBuilder, EngineConfig};
-use ndn_face_native::local::{InProcFace, InProcHandle};
+use ndn_face::local::{InProcFace, InProcHandle};
 use ndn_packet::Name;
 use ndn_repo::{Repo, RepoControl, RepoService, RepoServiceConfig};
 use ndn_strategy::MulticastStrategy;

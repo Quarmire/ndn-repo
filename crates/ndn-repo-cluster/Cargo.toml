@@ -24,6 +24,6 @@ web-time   = { workspace = true }
 tokio           = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 ndn-engine      = { workspace = true }
 ndn-app         = { workspace = true }
-ndn-face-native = { workspace = true }
+ndn-face = { workspace = true }
 ndn-strategy    = { workspace = true }
 ndn-transport   = { workspace = true }
