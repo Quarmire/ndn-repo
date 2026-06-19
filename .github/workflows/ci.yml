@@ -1,0 +1,49 @@
+name: CI — ndn-repo
+
+# Depends on ndn-rs + ndn-ext via ../ path deps → sibling checkout.
+
+on:
+  push:
+    branches: [main]
+    paths: ["crates/**", "Cargo.toml", ".github/workflows/ci.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["crates/**", "Cargo.toml", ".github/workflows/ci.yml"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: repo (clippy / test / doc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: ndn-repo }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: main, path: ndn-rs }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: main, path: ndn-ext }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ndn-repo/target
+          key: ${{ runner.os }}-cargo-repo-${{ hashFiles('ndn-repo/**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-repo-
+      - name: Format
+        working-directory: ndn-repo
+        run: cargo fmt --all -- --check
+      - name: Lint
+        working-directory: ndn-repo
+        run: cargo clippy --all-features -- -D warnings
+      - name: Test
+        working-directory: ndn-repo
+        run: cargo test --all-features
+      - name: Doc build
+        working-directory: ndn-repo
+        run: cargo doc --no-deps
