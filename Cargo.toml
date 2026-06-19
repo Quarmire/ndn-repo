@@ -20,17 +20,17 @@ name = "ndn-rs"
 
 [workspace.dependencies]
 # NDN workspace crates — grouped by subdirectory layer
-ndn-tlv       = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1", default-features = false }
-ndn-packet    = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1", default-features = false }
-ndn-transport = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-face             = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-strategy  = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-security  = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-engine    = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-app       = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-ipc       = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-ipc-shm   = { git = "https://github.com/Quarmire/ndn-ext", tag = "v0.1.0-alpha.1" }
-ndn-sync      = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
+ndn-tlv       = { path = "../ndn-rs/crates/core/ndn-tlv", default-features = false }
+ndn-packet    = { path = "../ndn-rs/crates/core/ndn-packet", default-features = false }
+ndn-transport = { path = "../ndn-rs/crates/core/ndn-transport" }
+ndn-face             = { path = "../ndn-rs/crates/faces/ndn-face" }
+ndn-strategy  = { path = "../ndn-rs/crates/forwarding/ndn-strategy" }
+ndn-security  = { path = "../ndn-rs/crates/security/ndn-security" }
+ndn-engine    = { path = "../ndn-rs/crates/forwarding/ndn-engine" }
+ndn-app       = { path = "../ndn-rs/crates/app/ndn-app" }
+ndn-ipc       = { path = "../ndn-rs/crates/forwarding/ndn-ipc" }
+ndn-ipc-shm   = { path = "../ndn-ext/crates/faces/ndn-ipc-shm" }
+ndn-sync      = { path = "../ndn-rs/crates/protocols/ndn-sync" }
 ndn-repo      = { path = "crates/ndn-repo" }
 
 # Core async runtime — individual crates enable only the features they need
