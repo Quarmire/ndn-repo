@@ -12,7 +12,7 @@ classification = "extension"
 # Durable on-disk DataStore backend (native). On by default; disable for a
 # target-agnostic, codec-only build (e.g. wasm).
 default = ["fjall-store"]
-fjall-store = ["dep:fjall"]
+fjall-store = ["dep:fjall", "dep:ndn-storage"]
 # The runnable `ndn-repo` daemon (Unix-socket IPC to a forwarder). Off by
 # default so the library stays light; build with `--features bin`.
 bin = ["fjall-store", "dep:ndn-app", "dep:ndn-ipc", "dep:ndn-ipc-shm", "dep:anyhow", "dep:tracing-subscriber"]
@@ -28,6 +28,9 @@ tokio-util = { workspace = true }
 thiserror  = { workspace = true }
 tracing    = { workspace = true }
 fjall      = { workspace = true, optional = true }
+# The pluggable storage substrate: the fjall LSM engine + name→wire key codec.
+# Replaces ndn-repo's hand-rolled fjall binding and `name_to_key`.
+ndn-storage = { workspace = true, optional = true, features = ["fjall", "named"] }
 # Daemon-only (feature `bin`).
 ndn-app            = { workspace = true, optional = true }
 ndn-ipc            = { workspace = true, optional = true }

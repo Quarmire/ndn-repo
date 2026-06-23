@@ -3,84 +3,63 @@
 //! (process-lifetime) ships in `ndn-sync`; [`FjallStore`] here adds on-disk
 //! persistence so a repo survives restarts. Any `DataStore` impl works; an
 //! embedder can supply its own (S3, sqlite, …).
+//!
+//! The on-disk engine + name→key codec are **not** hand-rolled here: they come
+//! from ndn-rs's `ndn-storage` substrate. `FjallStore` is a thin bridge from
+//! `ndn_storage::FjallBackend` (consumed through its **synchronous** facet, so
+//! the `DataStore` path needs no async runtime) to `ndn_sync::DataStore`.
 
 #[cfg(feature = "fjall-store")]
 pub use fjall_store::FjallStore;
-
-/// Encode a [`Name`](ndn_packet::Name) to a storage key: the concatenated
-/// component TLVs (the Name TLV value, without the outer `0x07`). NDN's
-/// canonical component ordering is preserved byte-for-byte, so a parent
-/// prefix's key is a byte-prefix of every descendant's key — making
-/// `CanBePrefix` lookups range scans (matches `ndn-store`'s CS key codec).
-#[cfg(feature = "fjall-store")]
-fn name_to_key(name: &ndn_packet::Name) -> Vec<u8> {
-    use ndn_tlv::TlvWriter;
-    let mut w = TlvWriter::new();
-    for c in name.components() {
-        w.write_tlv(c.typ, &c.value);
-    }
-    w.finish().to_vec()
-}
 
 #[cfg(feature = "fjall-store")]
 mod fjall_store {
     use bytes::Bytes;
     use ndn_packet::Name;
+    // `name_key` is ndn-storage's shared key codec (component-TLVs in NDN
+    // canonical order — byte-identical to ndn-repo's former `name_to_key`, so a
+    // parent name is a byte-prefix of its descendants and `CanBePrefix` lookups
+    // are prefix scans). `SyncBackend` is the synchronous core that fjall impls
+    // directly — `DataStore` is sync, so we drive the store without any async.
+    use ndn_storage::{FjallBackend, SyncBackend, name_key};
     use ndn_sync::DataStore;
 
-    use super::name_to_key;
-
-    /// On-disk [`DataStore`] backed by [fjall](https://docs.rs/fjall) (an LSM
-    /// key-value store). Stores each Data packet's full wire under its name, so
+    /// On-disk [`DataStore`] backed by [`ndn_storage::FjallBackend`] (fjall's LSM
+    /// key-value engine). Stores each Data packet's full wire under its name, so
     /// the repo re-serves it verbatim across process restarts.
-    pub struct FjallStore {
-        keyspace: fjall::Keyspace,
-        // Keeps the database open for the keyspace's lifetime.
-        #[allow(dead_code)]
-        db: fjall::Database,
-    }
+    pub struct FjallStore(FjallBackend);
 
     impl FjallStore {
         /// Open (or create) a repo store rooted at `path`.
         pub fn open(path: impl AsRef<std::path::Path>) -> fjall::Result<Self> {
-            let db = fjall::Database::builder(path).open()?;
-            let keyspace = db.keyspace("repo", fjall::KeyspaceCreateOptions::default)?;
-            Ok(Self { keyspace, db })
+            Ok(Self(FjallBackend::open(path)?))
         }
 
-        /// Number of stored Data packets (full scan — diagnostics/tests).
+        /// Number of stored Data packets (full scan — diagnostics/tests). The
+        /// empty prefix matches every key.
         pub fn len(&self) -> usize {
-            self.keyspace.iter().count()
+            self.0.scan_prefix(&[], 0).len()
         }
 
         pub fn is_empty(&self) -> bool {
-            self.keyspace.iter().next().is_none()
+            self.0.first_under(&[]).is_none()
         }
     }
 
     impl DataStore for FjallStore {
         fn insert(&self, name: Name, wire: Bytes) {
-            let key = name_to_key(&name);
-            let _ = self.keyspace.insert(&key, wire.as_ref());
+            self.0.put(&name_key(&name), wire);
         }
 
         fn get(&self, name: &Name) -> Option<Bytes> {
-            let key = name_to_key(name);
-            let slice = self.keyspace.get(&key).ok()??;
-            Some(Bytes::copy_from_slice(&slice))
+            self.0.get(&name_key(name))
         }
 
         fn find_under(&self, prefix: &Name) -> Option<Bytes> {
-            // Range scan: keys are sorted by NDN canonical order, so the first
-            // under the prefix is the lexicographically-smallest descendant —
-            // the answer to a CanBePrefix Interest.
-            let prefix_key = name_to_key(prefix);
-            for guard in self.keyspace.prefix(&prefix_key) {
-                if let Ok((_key, val)) = guard.into_inner() {
-                    return Some(Bytes::copy_from_slice(&val));
-                }
-            }
-            None
+            // Prefix scan: keys are sorted by NDN canonical order, so the
+            // lexicographically-smallest descendant is the answer to a
+            // CanBePrefix Interest.
+            self.0.first_under(&name_key(prefix)).map(|(_, v)| v)
         }
     }
 }
@@ -90,6 +69,7 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use ndn_packet::Name;
+    use ndn_storage::name_key;
     use ndn_sync::DataStore;
 
     fn n(s: &str) -> Name {
@@ -100,7 +80,7 @@ mod tests {
     fn name_key_is_prefix_preserving() {
         let parent = n("/a/b");
         let child = n("/a/b/c");
-        assert!(name_to_key(&child).starts_with(&name_to_key(&parent)));
+        assert!(name_key(&child).starts_with(&name_key(&parent)));
     }
 
     #[test]
