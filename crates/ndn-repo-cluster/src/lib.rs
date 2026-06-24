@@ -14,9 +14,11 @@
 //! ndnd-compatible single-node repo rather than replacing its command protocol.
 
 pub mod coord;
+pub mod erasure;
 pub mod msg;
 pub mod node;
 
 pub use coord::{ClusterConfig, ClusterState, JobId, NodeId, NodeStatus};
+pub use erasure::{EC_KEYWORD, ErasureManifest, Shard, encode_object, reconstruct};
 pub use msg::ClusterMsg;
 pub use node::{ClusterNode, TickOutcome, run};

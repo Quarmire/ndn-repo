@@ -176,6 +176,27 @@ impl ClusterState {
         live.into_iter().map(|(n, _)| n.clone()).collect()
     }
 
+    /// The `count` live nodes that should each hold one erasure shard (G6), in
+    /// shard-index order — shard `i` is held by `shard_holders(..)[i]`. Deterministic
+    /// (utilisation asc, ties by name), so every node agrees on the layout without a
+    /// coordinator. Returns fewer than `count` only when the cluster has fewer live
+    /// nodes than shards (the object isn't fully placeable then — raise redundancy or
+    /// wait for nodes).
+    pub fn shard_holders(&self, count: usize, now_ns: u64) -> Vec<NodeId> {
+        let mut live = self.ranked_live_nodes(now_ns);
+        live.truncate(count);
+        live
+    }
+
+    /// This node's shard index for an `n`-shard object, or `None` if it is not one of
+    /// the `n` holders.
+    pub fn shard_index_of(&self, self_id: &NodeId, n: usize, now_ns: u64) -> Option<u16> {
+        self.shard_holders(n, now_ns)
+            .iter()
+            .position(|node| node == self_id)
+            .map(|i| i as u16)
+    }
+
     fn effective_replication(&self, job: &Job) -> usize {
         if job.replication_factor != 0 {
             job.replication_factor
@@ -338,6 +359,28 @@ mod tests {
         assert!(st.is_live(&n("/r/a"), 1_000));
         assert!(st.is_live(&n("/r/a"), 4_000)); // exactly at the 3_000 boundary
         assert!(!st.is_live(&n("/r/a"), 4_001)); // past it → dead
+    }
+
+    #[test]
+    fn shard_holders_are_deterministic_lowest_utilisation_first() {
+        let mut st = ClusterState::new(cfg());
+        let now = 1_000;
+        // Distinct utilisations so the ranking is unambiguous: c(10%) < a(20%) < b(30%) ...
+        beat(&mut st, "/r/b", 30, 100, now);
+        beat(&mut st, "/r/a", 20, 100, now);
+        beat(&mut st, "/r/c", 10, 100, now);
+        beat(&mut st, "/r/d", 40, 100, now);
+
+        // Place 3 shards: the 3 lowest-utilisation live nodes, in shard-index order.
+        let holders = st.shard_holders(3, now);
+        assert_eq!(holders, vec![n("/r/c"), n("/r/a"), n("/r/b")]);
+        // Each node knows its own shard index (or that it holds none).
+        assert_eq!(st.shard_index_of(&n("/r/c"), 3, now), Some(0));
+        assert_eq!(st.shard_index_of(&n("/r/b"), 3, now), Some(2));
+        assert_eq!(st.shard_index_of(&n("/r/d"), 3, now), None, "4th node holds no shard of 3");
+
+        // Asking for more shards than live nodes returns only the live ones (not placeable).
+        assert_eq!(st.shard_holders(9, now).len(), 4);
     }
 
     #[test]

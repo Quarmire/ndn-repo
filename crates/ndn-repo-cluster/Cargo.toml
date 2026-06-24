@@ -11,6 +11,7 @@ classification = "extension"
 [dependencies]
 ndn-repo   = { workspace = true }
 ndn-sync   = { workspace = true }
+ndn-coding = { workspace = true }
 ndn-packet = { workspace = true, features = ["std"] }
 ndn-tlv    = { workspace = true, features = ["std"] }
 bytes      = { workspace = true, features = ["std"] }

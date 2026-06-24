@@ -30,6 +30,8 @@ ndn-engine    = { path = "../ndn-rs/crates/forwarding/ndn-engine" }
 ndn-app       = { path = "../ndn-rs/crates/app/ndn-app" }
 ndn-ipc       = { path = "../ndn-rs/crates/forwarding/ndn-ipc" }
 ndn-ipc-shm   = { path = "../ndn-ext/crates/faces/ndn-ipc-shm" }
+# F1 erasure codec (Encoder/Decoder) for cross-repo K-of-N striping; codec core only.
+ndn-coding    = { path = "../ndn-ext/crates/coding/ndn-coding", default-features = false }
 ndn-sync      = { path = "../ndn-rs/crates/protocols/ndn-sync" }
 ndn-storage   = { path = "../ndn-rs/crates/core/ndn-storage", default-features = false }
 ndn-repo      = { path = "crates/ndn-repo" }
