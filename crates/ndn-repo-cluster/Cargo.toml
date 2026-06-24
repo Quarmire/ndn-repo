@@ -19,6 +19,7 @@ ndn-tlv    = { workspace = true, features = ["std"] }
 ndn-security = { workspace = true }
 bytes      = { workspace = true, features = ["std"] }
 sha2       = { workspace = true }
+futures    = { workspace = true }
 tokio      = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tokio-util = { workspace = true }
 thiserror  = { workspace = true }

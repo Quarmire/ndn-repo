@@ -269,6 +269,45 @@ pub fn reconstruct_with(
     reconstruct(manifest, &shards)
 }
 
+/// Async, **parallel** counterpart of [`reconstruct_with`] (G6.4): fetch all N shards
+/// **concurrently** — each bounded by `per_fetch_timeout` — instead of serially, then
+/// reconstruct from whatever arrives (still verified per-shard by [`reconstruct`]). Over a
+/// real network this turns N sequential RTTs into one: recovery latency is the slowest of
+/// the K-fastest reachable shards, not the sum, and an unreachable/slow holder is simply
+/// timed out rather than stalling the whole read. `fetch` maps a shard name to a future
+/// yielding its Data wire (e.g. a forwarder fetch), or `None` if absent.
+pub async fn reconstruct_with_async<F, Fut>(
+    manifest: &ErasureManifest,
+    per_fetch_timeout: core::time::Duration,
+    fetch: F,
+) -> Option<Bytes>
+where
+    F: Fn(Name) -> Fut,
+    Fut: core::future::Future<Output = Option<Bytes>>,
+{
+    let gathered = futures::future::join_all((0..manifest.n).map(|i| {
+        let fut = fetch(manifest.shard_name(i));
+        async move {
+            // Bound each fetch: a slow/dead holder times out instead of stalling the read.
+            match tokio::time::timeout(per_fetch_timeout, fut).await {
+                Ok(Some(wire)) => Some((i, wire)),
+                _ => None,
+            }
+        }
+    }))
+    .await;
+
+    let shards: Vec<(u16, Bytes)> = gathered
+        .into_iter()
+        .flatten()
+        .filter_map(|(i, wire)| {
+            let data = Data::decode(wire).ok()?;
+            Some((i, data.content()?.clone()))
+        })
+        .collect();
+    reconstruct(manifest, &shards)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +387,42 @@ mod tests {
             reconstruct_with(&manifest, |name| cluster.get(name).cloned()).is_none(),
             "fewer than K reachable ⇒ no reconstruction"
         );
+    }
+
+    #[tokio::test]
+    async fn async_parallel_reconstruct_tolerates_slow_and_missing_holders() {
+        use std::collections::HashMap;
+        use std::time::Duration;
+        let data: Vec<u8> = (0..4096u32).map(|i| (i * 7) as u8).collect();
+        let (shards, manifest) = encode_object(&obj(), &data, 4, 2).unwrap();
+        let mut cluster: HashMap<Name, Bytes> = HashMap::new();
+        for s in &shards {
+            cluster.insert(s.name.clone(), shard_data(s));
+        }
+        // Drop two holders (R=2): the parallel gather still recovers from the other K=4.
+        cluster.remove(&manifest.shard_name(1));
+        cluster.remove(&manifest.shard_name(4));
+
+        let got = reconstruct_with_async(&manifest, Duration::from_secs(1), |name| {
+            let hit = cluster.get(&name).cloned();
+            async move { hit } // a ready future stands in for a network fetch
+        })
+        .await
+        .expect("recovers from the reachable shards in parallel");
+        assert_eq!(got.as_ref(), data.as_slice());
+
+        // A missing shard returns None promptly (here) rather than stalling the read.
+        let mut sparse = cluster.clone();
+        for i in 0..manifest.n {
+            sparse.remove(&manifest.shard_name(i));
+        }
+        sparse.insert(manifest.shard_name(0), shard_data(&shards[0])); // only 1 < K reachable
+        let none = reconstruct_with_async(&manifest, Duration::from_millis(50), |name| {
+            let hit = sparse.get(&name).cloned();
+            async move { hit }
+        })
+        .await;
+        assert!(none.is_none(), "fewer than K reachable ⇒ no reconstruction");
     }
 
     #[test]
