@@ -73,15 +73,31 @@ impl ClusterNode {
         self.state.observe_job(target, repl);
     }
 
+    /// Learn of an **erasure-coded** unit of work (G6): N = `k + redundancy` shards, one
+    /// per holder, recoverable from any K. Gossip the matching
+    /// `ClusterMsg::Job { erasure: Some((k, n)), .. }` so peers fold the same spec.
+    pub fn announce_erasure_job(&mut self, target: JobId, k: u16, redundancy: u16) {
+        self.state.observe_erasure_job(target, k, redundancy);
+    }
+
+    /// This node's shard assignment for `target` (erasure jobs only): which shard to
+    /// store + the `(k, n)` to name shards and reconstruct. `None` for a replicated job or
+    /// when this node is not one of the holders. Drives the embedder's per-shard
+    /// fetch/store on [`TickOutcome::ingest`].
+    pub fn shard_plan(&self, target: &JobId, now_ns: u64) -> Option<crate::coord::ShardPlan> {
+        self.state.shard_plan(target, &self.self_id, now_ns)
+    }
+
     /// Fold a gossiped coordination message into the cluster view.
     pub fn observe(&mut self, msg: ClusterMsg, now_ns: u64) {
         match msg {
             ClusterMsg::Heartbeat { node, capacity_used, capacity_total, .. } => {
                 self.state.observe_heartbeat(node, capacity_used, capacity_total, now_ns);
             }
-            ClusterMsg::Job { target, replication_factor } => {
-                self.state.observe_job(target, replication_factor as usize);
-            }
+            ClusterMsg::Job { target, replication_factor, erasure } => match erasure {
+                Some((k, n)) => self.state.observe_erasure_job(target, k, n.saturating_sub(k)),
+                None => self.state.observe_job(target, replication_factor as usize),
+            },
             ClusterMsg::Claim { job, node, ts } => self.state.observe_claim(job, node, ts),
             ClusterMsg::Release { job, node } => self.state.observe_release(&job, &node),
         }
@@ -227,6 +243,12 @@ mod tests {
             }
         }
 
+        fn announce_erasure_all(&mut self, target: &str, k: u16, redundancy: u16) {
+            for node in &mut self.nodes {
+                node.announce_erasure_job(n(target), k, redundancy);
+            }
+        }
+
         fn kill(&mut self, idx: usize) {
             self.alive[idx] = false;
         }
@@ -305,6 +327,34 @@ mod tests {
         let observer = sim.alive.iter().position(|&a| a).unwrap();
         let now_claimants = sim.nodes[observer].state().live_claimants(&n("/obj/data"), sim.now);
         assert!(!now_claimants.contains(&victim));
+    }
+
+    #[test]
+    fn erasure_job_places_n_holders_each_with_a_distinct_shard() {
+        // K=4, R=2 ⇒ N=6 shards: exactly 6 of the 7 nodes hold one shard each, and the
+        // shard indices cover 0..6 with no duplicates (so any K=4 reconstruct the object).
+        let mut sim = Sim::new(&["/r/a", "/r/b", "/r/c", "/r/d", "/r/e", "/r/f", "/r/g"], 1000);
+        sim.announce_erasure_all("/obj/ec", 4, 2);
+        for _ in 0..5 {
+            sim.round();
+        }
+        assert_eq!(sim.live_claimants("/obj/ec"), 6, "N=K+R holders are placed");
+
+        // Each holder's shard plan, gathered from a surviving node's converged view.
+        let mut plans: Vec<u16> = sim
+            .nodes
+            .iter()
+            .filter_map(|node| node.shard_plan(&n("/obj/ec"), sim.now).map(|p| p.index))
+            .collect();
+        plans.sort_unstable();
+        assert_eq!(plans, vec![0, 1, 2, 3, 4, 5], "6 distinct shard indices, 0..N");
+        // And the plan carries the (k, n) the embedder needs to name + reconstruct.
+        let holder = sim
+            .nodes
+            .iter()
+            .find_map(|node| node.shard_plan(&n("/obj/ec"), sim.now))
+            .expect("a holder exists");
+        assert_eq!((holder.k, holder.n), (4, 6));
     }
 
     #[test]

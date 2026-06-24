@@ -21,6 +21,8 @@ mod t {
     pub const EPOCH: u64 = 0x1E16;
     pub const REPL: u64 = 0x1E17;
     pub const TS: u64 = 0x1E18;
+    pub const EC_K: u64 = 0x1E19; // erasure K (source shards)
+    pub const EC_N: u64 = 0x1E1A; // erasure N (total shards)
 }
 
 /// A coordination message.
@@ -33,11 +35,14 @@ pub enum ClusterMsg {
         capacity_total: u64,
         epoch: u64,
     },
-    /// Announce a unit of durable work (replicate `target`).
+    /// Announce a unit of durable work for `target`.
     Job {
         target: Name,
         /// 0 = use the cluster default.
         replication_factor: u64,
+        /// G6 erasure spec `(k, n)`: store as N shards recoverable from any K, rather
+        /// than whole-object copies. `None` ⇒ replication.
+        erasure: Option<(u16, u16)>,
     },
     /// `node` claims responsibility for `job` at `ts`.
     Claim { job: Name, node: Name, ts: u64 },
@@ -57,10 +62,14 @@ impl ClusterMsg {
                     nni(w, t::EPOCH, *epoch);
                 });
             }
-            ClusterMsg::Job { target, replication_factor } => {
+            ClusterMsg::Job { target, replication_factor, erasure } => {
                 w.write_nested(t::JOB, |w| {
                     name_container(w, t::TARGET, target);
                     nni(w, t::REPL, *replication_factor);
+                    if let Some((k, n)) = erasure {
+                        nni(w, t::EC_K, *k as u64);
+                        nni(w, t::EC_N, *n as u64);
+                    }
                 });
             }
             ClusterMsg::Claim { job, node, ts } => {
@@ -97,9 +106,11 @@ impl ClusterMsg {
             }
             t::JOB => {
                 let f = Fields::parse(val);
+                let erasure = (f.ec_k != 0 && f.ec_n != 0).then_some((f.ec_k as u16, f.ec_n as u16));
                 Some(ClusterMsg::Job {
                     target: f.target?,
                     replication_factor: f.repl,
+                    erasure,
                 })
             }
             t::CLAIM => {
@@ -129,6 +140,8 @@ struct Fields {
     epoch: u64,
     repl: u64,
     ts: u64,
+    ec_k: u64,
+    ec_n: u64,
 }
 
 impl Fields {
@@ -145,6 +158,8 @@ impl Fields {
                 t::EPOCH => f.epoch = decode_nni(&val),
                 t::REPL => f.repl = decode_nni(&val),
                 t::TS => f.ts = decode_nni(&val),
+                t::EC_K => f.ec_k = decode_nni(&val),
+                t::EC_N => f.ec_n = decode_nni(&val),
                 _ => {}
             }
             if r.is_empty() {
@@ -206,7 +221,8 @@ mod tests {
     #[test]
     fn job_claim_release_roundtrip() {
         for m in [
-            ClusterMsg::Job { target: n("/obj/big"), replication_factor: 3 },
+            ClusterMsg::Job { target: n("/obj/big"), replication_factor: 3, erasure: None },
+            ClusterMsg::Job { target: n("/obj/ec"), replication_factor: 0, erasure: Some((4, 6)) },
             ClusterMsg::Claim { job: n("/obj/big"), node: n("/r/a"), ts: 99 },
             ClusterMsg::Release { job: n("/obj/big"), node: n("/r/a") },
         ] {

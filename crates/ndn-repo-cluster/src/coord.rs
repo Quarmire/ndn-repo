@@ -84,6 +84,19 @@ pub struct Job {
     pub replication_factor: usize,
     /// node → claim timestamp (ns). Liveness is judged separately.
     pub claimants: HashMap<NodeId, u64>,
+    /// G6 erasure spec `(k, n)`: the object is N = k+R shards (one per holder),
+    /// recoverable from any K. `None` ⇒ whole-object replication. When set, the effective
+    /// replication is N (so N holders are placed), and each holder stores one shard.
+    pub erasure: Option<(u16, u16)>,
+}
+
+/// What one node must store for an erasure-coded job: its shard `index` of the N, and the
+/// `(k, n)` needed to name shards and reconstruct. From [`ClusterState::shard_plan`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShardPlan {
+    pub index: u16,
+    pub k: u16,
+    pub n: u16,
 }
 
 /// One node's converged view of the cluster.
@@ -129,6 +142,17 @@ impl ClusterState {
         if replication_factor != 0 {
             j.replication_factor = replication_factor;
         }
+    }
+
+    /// Register (or refresh) an **erasure-coded** job (G6): N = `k + redundancy` shards,
+    /// one per holder, recoverable from any K. The effective replication becomes N, so N
+    /// holders are placed — each storing the shard at its [`shard_plan`](Self::shard_plan)
+    /// index. `k`/`redundancy` of 0 are clamped to 1.
+    pub fn observe_erasure_job(&mut self, job: JobId, k: u16, redundancy: u16) {
+        let k = k.max(1);
+        let n = k.saturating_add(redundancy.max(1));
+        let j = self.jobs.entry(job).or_default();
+        j.erasure = Some((k, n));
     }
 
     /// Record a node's claim on a job (creates the job if unseen).
@@ -198,11 +222,27 @@ impl ClusterState {
     }
 
     fn effective_replication(&self, job: &Job) -> usize {
+        // An erasure job needs N holders (one shard each); that overrides the
+        // copy-count replication factor.
+        if let Some((_, n)) = job.erasure {
+            return n as usize;
+        }
         if job.replication_factor != 0 {
             job.replication_factor
         } else {
             self.config.replication_factor
         }
+    }
+
+    /// What `self_id` must store for `job`, if `job` is erasure-coded and `self_id` is one
+    /// of its N holders: the shard index (its rank among holders) + `(k, n)`. `None` for a
+    /// whole-object (replicated) job, or when `self_id` is not a holder. The embedder uses
+    /// it to fetch/store `<job>/EC/<index>` instead of the whole object, and to know it
+    /// needs any K shards to reconstruct on read.
+    pub fn shard_plan(&self, job: &JobId, self_id: &NodeId, now_ns: u64) -> Option<ShardPlan> {
+        let (k, n) = self.jobs.get(job)?.erasure?;
+        let index = self.shard_index_of(self_id, n as usize, now_ns)?;
+        Some(ShardPlan { index, k, n })
     }
 
     /// Claimants that are currently live.
