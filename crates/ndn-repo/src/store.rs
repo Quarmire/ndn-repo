@@ -38,28 +38,46 @@ mod fjall_store {
         /// Number of stored Data packets (full scan — diagnostics/tests). The
         /// empty prefix matches every key.
         pub fn len(&self) -> usize {
-            self.0.scan_prefix(&[], 0).len()
+            self.0.scan_prefix(&[], 0).map(|v| v.len()).unwrap_or(0)
         }
 
         pub fn is_empty(&self) -> bool {
-            self.0.first_under(&[]).is_none()
+            self.0.first_under(&[]).map(|o| o.is_none()).unwrap_or(true)
         }
     }
 
+    // `ndn_sync::DataStore` is infallible, so this bridge is the one place a storage
+    // error must be collapsed to a miss/no-op — but it is now *logged* rather than
+    // silently swallowed (the whole point of the fallible `ndn_storage` API): a disk
+    // failure surfaces in the logs instead of looking like missing data.
     impl DataStore for FjallStore {
         fn insert(&self, name: Name, wire: Bytes) {
-            self.0.put(&name_key(&name), wire);
+            if let Err(e) = self.0.put(&name_key(&name), wire) {
+                tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store insert failed");
+            }
         }
 
         fn get(&self, name: &Name) -> Option<Bytes> {
-            self.0.get(&name_key(name))
+            match self.0.get(&name_key(name)) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store get failed");
+                    None
+                }
+            }
         }
 
         fn find_under(&self, prefix: &Name) -> Option<Bytes> {
             // Prefix scan: keys are sorted by NDN canonical order, so the
             // lexicographically-smallest descendant is the answer to a
             // CanBePrefix Interest.
-            self.0.first_under(&name_key(prefix)).map(|(_, v)| v)
+            match self.0.first_under(&name_key(prefix)) {
+                Ok(o) => o.map(|(_, v)| v),
+                Err(e) => {
+                    tracing::warn!(target: "ndn_repo", %prefix, error = %e, "fjall store scan failed");
+                    None
+                }
+            }
         }
     }
 }
