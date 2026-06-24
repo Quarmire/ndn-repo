@@ -15,6 +15,7 @@ ndn-coding = { workspace = true }
 ndn-packet = { workspace = true, features = ["std"] }
 ndn-tlv    = { workspace = true, features = ["std"] }
 bytes      = { workspace = true, features = ["std"] }
+sha2       = { workspace = true }
 tokio      = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tokio-util = { workspace = true }
 thiserror  = { workspace = true }

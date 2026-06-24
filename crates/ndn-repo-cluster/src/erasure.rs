@@ -39,6 +39,19 @@ pub struct ErasureManifest {
     pub original_len: u64,
     /// Per-segment length (all segments are equal-length for the codec).
     pub shard_len: u32,
+    /// SHA-256 of each shard's coded bytes, in index order (`n` entries). Reconstruction
+    /// verifies every shard against its hash before using it, so a single corrupted or
+    /// malicious holder can't silently poison the recovered object (systematic RS recovery
+    /// trusts its K inputs). NB: the manifest itself must be authenticated out-of-band
+    /// (bound to the object's trust) — a forged manifest can still lie about hashes.
+    pub shard_hashes: Vec<[u8; 32]>,
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().into()
 }
 
 impl ErasureManifest {
@@ -55,34 +68,51 @@ impl ErasureManifest {
         (0..self.n).map(|i| self.shard_name(i)).collect()
     }
 
-    /// Compact wire form: `k(2 BE) n(2 BE) original_len(8 BE) shard_len(4 BE) ‖ object-URI`.
+    /// Compact wire form:
+    /// `k(2) n(2) original_len(8) shard_len(4) name_len(4) ‖ name-TLV ‖ n×32 shard-hashes`,
+    /// all big-endian. The object name is encoded as **TLV** (not a URI) so name components
+    /// with arbitrary bytes round-trip faithfully.
     pub fn to_bytes(&self) -> Bytes {
-        let uri = self.object.to_string();
-        let mut v = Vec::with_capacity(16 + uri.len());
+        let name_tlv = self.object.encode_to_tlv();
+        let name_tlv = name_tlv.as_ref();
+        let mut v = Vec::with_capacity(20 + name_tlv.len() + 32 * self.shard_hashes.len());
         v.extend_from_slice(&self.k.to_be_bytes());
         v.extend_from_slice(&self.n.to_be_bytes());
         v.extend_from_slice(&self.original_len.to_be_bytes());
         v.extend_from_slice(&self.shard_len.to_be_bytes());
-        v.extend_from_slice(uri.as_bytes());
+        v.extend_from_slice(&(name_tlv.len() as u32).to_be_bytes());
+        v.extend_from_slice(name_tlv);
+        for h in &self.shard_hashes {
+            v.extend_from_slice(h);
+        }
         Bytes::from(v)
     }
 
-    /// Parse [`to_bytes`](Self::to_bytes). `None` if truncated or the URI is invalid.
+    /// Parse [`to_bytes`](Self::to_bytes). `None` if truncated or malformed.
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
-        if b.len() < 16 {
+        if b.len() < 20 {
             return None;
         }
         let k = u16::from_be_bytes([b[0], b[1]]);
         let n = u16::from_be_bytes([b[2], b[3]]);
         let original_len = u64::from_be_bytes(b[4..12].try_into().ok()?);
         let shard_len = u32::from_be_bytes(b[12..16].try_into().ok()?);
-        let object: Name = std::str::from_utf8(&b[16..]).ok()?.parse().ok()?;
+        let name_len = u32::from_be_bytes(b[16..20].try_into().ok()?) as usize;
+        let name_end = 20usize.checked_add(name_len)?;
+        let name_tlv = b.get(20..name_end)?;
+        let object = Name::decode_from_tlv(Bytes::copy_from_slice(name_tlv)).ok()?;
+        let hashes = b.get(name_end..)?;
+        if hashes.len() != 32 * n as usize {
+            return None;
+        }
+        let shard_hashes = hashes.chunks_exact(32).map(|c| c.try_into().unwrap()).collect();
         Some(Self {
             object,
             k,
             n,
             original_len,
             shard_len,
+            shard_hashes,
         })
     }
 }
@@ -115,12 +145,13 @@ pub fn encode_object(
     let mut padded = data.to_vec();
     padded.resize(shard_len * k as usize, 0);
 
-    let manifest = ErasureManifest {
+    let mut manifest = ErasureManifest {
         object: object.clone(),
         k,
         n,
         original_len: data.len() as u64,
         shard_len: shard_len as u32,
+        shard_hashes: Vec::with_capacity(n as usize),
     };
 
     let mut enc = Encoder::new(k, n)?;
@@ -129,6 +160,7 @@ pub fn encode_object(
         let start = i as usize * shard_len;
         let seg = Bytes::copy_from_slice(&padded[start..start + shard_len]);
         enc.feed(seg.clone())?;
+        manifest.shard_hashes.push(sha256(&seg));
         shards.push(Shard {
             index: i,
             name: manifest.shard_name(i),
@@ -136,21 +168,33 @@ pub fn encode_object(
         });
     }
     for index in k..n {
+        let parity = enc.parity(index)?;
+        manifest.shard_hashes.push(sha256(&parity));
         shards.push(Shard {
             index,
             name: manifest.shard_name(index),
-            bytes: enc.parity(index)?,
+            bytes: parity,
         });
     }
     Ok((shards, manifest))
 }
 
-/// Reconstruct the object from **any K** of its shards (each `(index, bytes)`). Returns
-/// `None` if fewer than K distinct shards are supplied or decoding fails.
+/// Reconstruct the object from **any K** of its shards (each `(index, bytes)`). Each shard
+/// is verified against the manifest's per-shard hash before use — a shard that fails (wrong
+/// bytes, forged, or malformed) is skipped, and reconstruction proceeds from the remaining
+/// good ones — so a corrupted holder can't silently produce wrong data. Returns `None` if
+/// fewer than K *verified* shards are supplied.
 pub fn reconstruct(manifest: &ErasureManifest, shards: &[(u16, Bytes)]) -> Option<Bytes> {
     let mut dec = Decoder::new(manifest.k, manifest.n).ok()?;
     for (index, bytes) in shards {
-        dec.absorb(*index, bytes.clone()).ok()?;
+        // Integrity gate: only a shard whose bytes match the manifest hash for its index
+        // is fed to the codec.
+        if manifest.shard_hashes.get(*index as usize).map(|h| sha256(bytes) == *h) != Some(true) {
+            continue;
+        }
+        if dec.absorb(*index, bytes.clone()).is_err() {
+            continue; // malformed for the codec — skip, try the rest
+        }
         if dec.is_complete() {
             break;
         }
@@ -176,18 +220,16 @@ pub fn shard_data(shard: &Shard) -> Bytes {
 
 /// Reconstruct the object by fetching its shards via `fetch` — a closure returning a
 /// shard's Data **wire** for a name (e.g. `Repo::get`, or a network fetch over the
-/// forwarder), or `None` if that holder doesn't have it. Gathers up to K shards then
-/// decodes, so it stops the moment enough are in hand and tolerates the other R being
-/// unreachable.
+/// forwarder), or `None` if that holder doesn't have it. Gathers all reachable shards and
+/// hands them to [`reconstruct`], which verifies each against the manifest hash and uses
+/// the first K good ones — so it tolerates both the R unreachable shards *and* corrupted
+/// holders (a bad shard is skipped, not trusted).
 pub fn reconstruct_with(
     manifest: &ErasureManifest,
     mut fetch: impl FnMut(&Name) -> Option<Bytes>,
 ) -> Option<Bytes> {
     let mut shards: Vec<(u16, Bytes)> = Vec::new();
     for i in 0..manifest.n {
-        if shards.len() >= manifest.k as usize {
-            break;
-        }
         if let Some(wire) = fetch(&manifest.shard_name(i))
             && let Ok(data) = Data::decode(wire)
             && let Some(content) = data.content()
@@ -285,5 +327,44 @@ mod tests {
         let decoded = ErasureManifest::from_bytes(&manifest.to_bytes()).expect("parses");
         assert_eq!(decoded, manifest);
         assert!(ErasureManifest::from_bytes(&[0u8; 4]).is_none(), "truncated rejected");
+    }
+
+    #[test]
+    fn manifest_carries_a_hash_per_shard() {
+        let (shards, manifest) = encode_object(&obj(), &[9u8; 800], 4, 2).unwrap();
+        assert_eq!(manifest.shard_hashes.len(), shards.len(), "one hash per shard");
+        for s in &shards {
+            assert_eq!(
+                manifest.shard_hashes[s.index as usize],
+                sha256(&s.bytes),
+                "the manifest hash matches the shard bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn corrupted_shard_is_skipped_not_trusted() {
+        let data: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        let (shards, manifest) = encode_object(&obj(), &data, 4, 2).unwrap();
+
+        // Forge shard 1's bytes (a malicious / bit-rotted holder). With it included we
+        // still have 5 candidates ⇒ K=4 good ones remain, so recovery must (a) reject the
+        // forged shard and (b) still return the *correct* object — never the wrong bytes.
+        let mut tampered: Vec<(u16, Bytes)> =
+            shards.iter().map(|s| (s.index, s.bytes.clone())).collect();
+        tampered[1].1 = Bytes::from(vec![0xFFu8; tampered[1].1.len()]);
+
+        let got = reconstruct(&manifest, &tampered).expect("K good shards remain");
+        assert_eq!(got.as_ref(), data.as_slice(), "a forged shard never corrupts the output");
+
+        // If corrupting it leaves only 3 good shards (< K), recovery fails closed rather
+        // than absorbing bad bytes.
+        let mut starved: Vec<(u16, Bytes)> =
+            shards.iter().take(4).map(|s| (s.index, s.bytes.clone())).collect();
+        starved[0].1 = Bytes::from(vec![0xFFu8; starved[0].1.len()]);
+        assert!(
+            reconstruct(&manifest, &starved).is_none(),
+            "with too few verified shards, reconstruction fails rather than trusting forged bytes"
+        );
     }
 }
