@@ -18,7 +18,9 @@ pub mod erasure;
 pub mod msg;
 pub mod node;
 
-pub use coord::{ClusterConfig, ClusterState, JobId, NodeId, NodeStatus};
-pub use erasure::{EC_KEYWORD, ErasureManifest, Shard, encode_object, reconstruct};
+pub use coord::{ClusterConfig, ClusterState, JobId, NodeId, NodeStatus, ShardPlan};
+pub use erasure::{
+    EC_KEYWORD, ErasureManifest, Shard, encode_object, reconstruct, reconstruct_with, shard_data,
+};
 pub use msg::ClusterMsg;
-pub use node::{ClusterNode, TickOutcome, run};
+pub use node::{ClusterNode, IngestTarget, TickOutcome, run};

@@ -227,13 +227,15 @@ fn spawn_cluster_node(
     }
 
     // ingest decisions → RepoService Join; drops → Leave.
-    let (ingest_tx, mut ingest_rx) = mpsc::channel::<Name>(64);
+    let (ingest_tx, mut ingest_rx) = mpsc::channel::<ndn_repo_cluster::IngestTarget>(64);
     let (drop_tx, mut drop_rx) = mpsc::channel::<Name>(64);
     {
         let ctl = ctl_tx.clone();
         tokio::spawn(async move {
-            while let Some(job) = ingest_rx.recv().await {
-                let _ = ctl.send(RepoControl::Join(job)).await;
+            while let Some(target) = ingest_rx.recv().await {
+                // Replicated jobs (this test) Join the group; an erasure job would fetch
+                // its `target.shard` instead.
+                let _ = ctl.send(RepoControl::Join(target.job)).await;
             }
         });
         let ctl = ctl_tx;

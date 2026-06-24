@@ -16,8 +16,18 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::coord::{ClusterConfig, ClusterState, JobId, NodeId};
+use crate::coord::{ClusterConfig, ClusterState, JobId, NodeId, ShardPlan};
 use crate::msg::ClusterMsg;
+
+/// An ingest decision surfaced to the embedder: the job to ingest, plus — for an
+/// erasure-coded job — *which* shard this node holds (`shard`). The embedder fetches +
+/// stores `<job>/EC/<shard.index>` for an erasure job, or the whole object (`shard: None`)
+/// for a replicated one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IngestTarget {
+    pub job: JobId,
+    pub shard: Option<ShardPlan>,
+}
 
 /// The actions a [`ClusterNode::tick`] decided on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -157,7 +167,7 @@ pub async fn run(
     tick_interval: Duration,
     publish_msg: Arc<dyn Fn(Bytes) + Send + Sync>,
     mut incoming: mpsc::Receiver<Bytes>,
-    ingest_tx: mpsc::Sender<JobId>,
+    ingest_tx: mpsc::Sender<IngestTarget>,
     drop_tx: mpsc::Sender<JobId>,
     capacity: Arc<dyn Fn() -> u64 + Send + Sync>,
     cancel: CancellationToken,
@@ -177,13 +187,17 @@ pub async fn run(
                 }
             }
             _ = ticker.tick() => {
+                let now = now_ns();
                 node.set_capacity_used(capacity());
-                let out = node.tick(now_ns());
+                let out = node.tick(now);
                 for m in out.publish {
                     publish_msg(m.encode());
                 }
                 for job in out.ingest {
-                    let _ = ingest_tx.send(job).await;
+                    // Attach this node's shard assignment (erasure jobs) so the embedder
+                    // fetches its shard, not the whole object.
+                    let shard = node.shard_plan(&job, now);
+                    let _ = ingest_tx.send(IngestTarget { job, shard }).await;
                 }
                 for job in out.drop {
                     let _ = drop_tx.send(job).await;

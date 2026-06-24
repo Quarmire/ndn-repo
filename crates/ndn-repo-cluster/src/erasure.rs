@@ -19,7 +19,8 @@
 
 use bytes::Bytes;
 use ndn_coding::{CodingError, Decoder, Encoder};
-use ndn_packet::Name;
+use ndn_packet::encode::DataBuilder;
+use ndn_packet::{Data, Name};
 
 /// Name component marking an erasure shard: `<object>/EC/<index>`.
 pub const EC_KEYWORD: &str = "EC";
@@ -166,6 +167,37 @@ pub fn reconstruct(manifest: &ErasureManifest, shards: &[(u16, Bytes)]) -> Optio
     Some(Bytes::from(out))
 }
 
+/// The named Data for a shard: `<object>/EC/<index>` with the coded bytes as Content,
+/// digest-signed. The data plane stores it (`ndn_repo::Repo::store_data`) / serves it like
+/// any Data — a holder keeps just its one shard, a tenth of an R+1-replica footprint.
+pub fn shard_data(shard: &Shard) -> Bytes {
+    DataBuilder::new(shard.name.clone(), &shard.bytes).sign_digest_sha256()
+}
+
+/// Reconstruct the object by fetching its shards via `fetch` — a closure returning a
+/// shard's Data **wire** for a name (e.g. `Repo::get`, or a network fetch over the
+/// forwarder), or `None` if that holder doesn't have it. Gathers up to K shards then
+/// decodes, so it stops the moment enough are in hand and tolerates the other R being
+/// unreachable.
+pub fn reconstruct_with(
+    manifest: &ErasureManifest,
+    mut fetch: impl FnMut(&Name) -> Option<Bytes>,
+) -> Option<Bytes> {
+    let mut shards: Vec<(u16, Bytes)> = Vec::new();
+    for i in 0..manifest.n {
+        if shards.len() >= manifest.k as usize {
+            break;
+        }
+        if let Some(wire) = fetch(&manifest.shard_name(i))
+            && let Ok(data) = Data::decode(wire)
+            && let Some(content) = data.content()
+        {
+            shards.push((i, content.clone()));
+        }
+    }
+    reconstruct(manifest, &shards)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +246,37 @@ mod tests {
         let too_few: Vec<(u16, Bytes)> =
             shards.iter().take(3).map(|s| (s.index, s.bytes.clone())).collect();
         assert!(reconstruct(&manifest, &too_few).is_none());
+    }
+
+    #[test]
+    fn data_plane_round_trips_through_distributed_shards() {
+        use std::collections::HashMap;
+        // Producer encodes + stores each shard as named Data (one per holder).
+        let data: Vec<u8> = (0..4096u32).map(|i| (i * 7) as u8).collect();
+        let (shards, manifest) = encode_object(&obj(), &data, 4, 2).unwrap();
+        let mut cluster: HashMap<Name, Bytes> = HashMap::new();
+        for s in &shards {
+            cluster.insert(s.name.clone(), shard_data(s));
+        }
+
+        // Reader gathers shards over the "network" (here the map) and reconstructs.
+        let got = reconstruct_with(&manifest, |name| cluster.get(name).cloned())
+            .expect("reconstructs from the stored shards");
+        assert_eq!(got.as_ref(), data.as_slice(), "object recovered from distributed shards");
+
+        // Lose R=2 holders (drop two shard Data) — any K=4 of the 6 still recover.
+        cluster.remove(&manifest.shard_name(0));
+        cluster.remove(&manifest.shard_name(3));
+        let got = reconstruct_with(&manifest, |name| cluster.get(name).cloned())
+            .expect("K shards remain");
+        assert_eq!(got.as_ref(), data.as_slice(), "recovered despite two lost holders");
+
+        // Lose a third (only 3 < K reachable) — reconstruction fails (no false data).
+        cluster.remove(&manifest.shard_name(1));
+        assert!(
+            reconstruct_with(&manifest, |name| cluster.get(name).cloned()).is_none(),
+            "fewer than K reachable ⇒ no reconstruction"
+        );
     }
 
     #[test]
