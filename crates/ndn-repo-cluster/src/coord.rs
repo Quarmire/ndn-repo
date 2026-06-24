@@ -203,13 +203,22 @@ impl ClusterState {
     /// The `count` live nodes that should each hold one erasure shard (G6), in
     /// shard-index order — shard `i` is held by `shard_holders(..)[i]`. Deterministic
     /// (utilisation asc, ties by name), so every node agrees on the layout without a
-    /// coordinator. Returns fewer than `count` only when the cluster has fewer live
+    /// coordinator. Returns fewer than `count` only when the cluster has fewer placeable
     /// nodes than shards (the object isn't fully placeable then — raise redundancy or
     /// wait for nodes).
+    ///
+    /// G6.5: this is filtered by [`has_capacity`](Self::has_capacity) — the **same** pool
+    /// [`designated_claimers`](Self::designated_claimers) draws from. If it weren't, a node
+    /// that lacked capacity would still occupy a shard index here while never being asked to
+    /// claim, so that shard would go unstored and the node that *does* claim (further down
+    /// the ranking) would compute no index for itself — the placement and the claim set
+    /// would diverge under capacity pressure.
     pub fn shard_holders(&self, count: usize, now_ns: u64) -> Vec<NodeId> {
-        let mut live = self.ranked_live_nodes(now_ns);
-        live.truncate(count);
-        live
+        self.ranked_live_nodes(now_ns)
+            .into_iter()
+            .filter(|n| self.has_capacity(n))
+            .take(count)
+            .collect()
     }
 
     /// This node's shard index for an `n`-shard object, or `None` if it is not one of
@@ -421,6 +430,38 @@ mod tests {
 
         // Asking for more shards than live nodes returns only the live ones (not placeable).
         assert_eq!(st.shard_holders(9, now).len(), 4);
+    }
+
+    /// G6.5: the shard placement and the claim pool must agree under capacity pressure —
+    /// a node without capacity is excluded from BOTH (it's never asked to claim, so it must
+    /// not occupy a shard index either), and the capacity-having node that does claim gets a
+    /// consistent index.
+    #[test]
+    fn shard_holders_match_the_claim_pool_under_capacity_pressure() {
+        let mut st = ClusterState::new(cfg());
+        let now = 1_000;
+        beat(&mut st, "/r/b", 10, 100, now); // 10% util → has capacity
+        beat(&mut st, "/r/a", 80, 100, now); // 80% > 75% watermark → no capacity
+
+        // shard_holders excludes the no-capacity node even though only 2 nodes are live.
+        assert_eq!(
+            st.shard_holders(2, now),
+            vec![n("/r/b")],
+            "only the capacity-having node is a holder"
+        );
+        assert_eq!(
+            st.shard_index_of(&n("/r/a"), 2, now),
+            None,
+            "the no-capacity node gets no shard index (it won't be asked to claim)"
+        );
+        assert_eq!(st.shard_index_of(&n("/r/b"), 2, now), Some(0));
+
+        // The 2-holder erasure job's designated claimers are exactly the holder set — no
+        // node is asked to claim a shard it has no index for.
+        let job = n("/obj/v=1");
+        st.observe_erasure_job(job.clone(), 1, 1); // (k=1, n=2)
+        let designated = st.designated_claimers(&job, now);
+        assert_eq!(designated, vec![n("/r/b")], "claim pool == holder pool");
     }
 
     #[test]

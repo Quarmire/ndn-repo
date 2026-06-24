@@ -21,9 +21,13 @@ use bytes::Bytes;
 use ndn_coding::{CodingError, Decoder, Encoder};
 use ndn_packet::encode::DataBuilder;
 use ndn_packet::{Data, Name};
+use ndn_security::{SignWith, Signer, TrustError};
 
 /// Name component marking an erasure shard: `<object>/EC/<index>`.
 pub const EC_KEYWORD: &str = "EC";
+
+/// Name component for the erasure **manifest**: `<object>/EC/manifest`.
+pub const MANIFEST_KEYWORD: &str = "manifest";
 
 /// Indexes an object's erasure shards: the K-of-N parameters + what's needed to trim the
 /// reassembled segments back to the exact original object. Published as named Data so any
@@ -42,8 +46,11 @@ pub struct ErasureManifest {
     /// SHA-256 of each shard's coded bytes, in index order (`n` entries). Reconstruction
     /// verifies every shard against its hash before using it, so a single corrupted or
     /// malicious holder can't silently poison the recovered object (systematic RS recovery
-    /// trusts its K inputs). NB: the manifest itself must be authenticated out-of-band
-    /// (bound to the object's trust) — a forged manifest can still lie about hashes.
+    /// trusts its K inputs). The manifest itself is authenticated by publishing it as a
+    /// **signed** Data ([`manifest_data`]) named [`manifest_name`] under the object's trust
+    /// namespace, and **verifying it against the object's trust before use** — otherwise a
+    /// forged manifest could lie about these hashes. [`reconstruct`] only protects the data
+    /// plane *given* a trusted manifest.
     pub shard_hashes: Vec<[u8; 32]>,
 }
 
@@ -218,6 +225,28 @@ pub fn shard_data(shard: &Shard) -> Bytes {
     DataBuilder::new(shard.name.clone(), &shard.bytes).sign_digest_sha256()
 }
 
+/// The manifest's Data name: `<object>/EC/manifest`. Under the object's namespace, so the
+/// object's trust schema governs who may sign it.
+pub fn manifest_name(object: &Name) -> Name {
+    object.clone().append(EC_KEYWORD).append(MANIFEST_KEYWORD)
+}
+
+/// Publish the manifest as a **signed** Data (G6.2): named [`manifest_name`], content is
+/// [`ErasureManifest::to_bytes`], signed with the object's `signer`. A reader must validate
+/// it against the object's trust (a `Validator`) before trusting its shard hashes — a forged
+/// manifest could otherwise point reconstruction at attacker-chosen bytes. This binds the
+/// manifest to the same identity as the object itself, exactly like any other Data.
+pub fn manifest_data(manifest: &ErasureManifest, signer: &dyn Signer) -> Result<Bytes, TrustError> {
+    DataBuilder::new(manifest_name(&manifest.object), &manifest.to_bytes()).sign_with_sync(signer)
+}
+
+/// Decode a manifest from a manifest Data's content. **The caller MUST have verified `data`
+/// against the object's trust first** (e.g. `Validator::validate`); this only parses the
+/// already-trusted content. `None` if the content is missing or malformed.
+pub fn decode_manifest_data(data: &Data) -> Option<ErasureManifest> {
+    ErasureManifest::from_bytes(data.content()?)
+}
+
 /// Reconstruct the object by fetching its shards via `fetch` — a closure returning a
 /// shard's Data **wire** for a name (e.g. `Repo::get`, or a network fetch over the
 /// forwarder), or `None` if that holder doesn't have it. Gathers all reachable shards and
@@ -327,6 +356,46 @@ mod tests {
         let decoded = ErasureManifest::from_bytes(&manifest.to_bytes()).expect("parses");
         assert_eq!(decoded, manifest);
         assert!(ErasureManifest::from_bytes(&[0u8; 4]).is_none(), "truncated rejected");
+    }
+
+    #[tokio::test]
+    async fn signed_manifest_verifies_against_object_trust_and_round_trips() {
+        use ndn_security::signer::Ed25519Signer;
+        use ndn_security::trust_schema::{NamePattern, PatternComponent, SchemaRule, TrustSchema};
+        use ndn_security::{Validator, ValidationResult};
+
+        let (_, manifest) = encode_object(&obj(), &[1, 2, 3, 4, 5], 3, 2).unwrap();
+        let key_name: Name = "/repo/KEY/k1".parse().unwrap();
+        let signer = Ed25519Signer::from_seed(&[7u8; 32], key_name.clone());
+
+        // Publish the manifest as a signed Data named under the object's namespace.
+        let wire = manifest_data(&manifest, &signer).expect("sign manifest");
+        let data = Data::decode(wire).unwrap();
+        assert_eq!(*data.name, manifest_name(&obj()), "manifest named <object>/EC/manifest");
+        assert!(data.sig_info().is_some(), "manifest is signed (not a bare digest)");
+
+        // A reader validates it against the object's trust before using it.
+        let mut schema = TrustSchema::new();
+        schema.add_rule(SchemaRule {
+            data_pattern: NamePattern(vec![PatternComponent::MultiCapture("_".into())]),
+            key_pattern: NamePattern(vec![PatternComponent::MultiCapture("_".into())]),
+        });
+        let validator = Validator::new(schema);
+        validator.cert_cache().insert(ndn_security::cert_cache::Certificate {
+            name: std::sync::Arc::new(key_name),
+            public_key: Bytes::copy_from_slice(&signer.public_key_bytes()),
+            valid_from: 0,
+            valid_until: u64::MAX,
+            issuer: None,
+            signed_region: None,
+            sig_value: None,
+            sig_type: ndn_packet::SignatureType::SignatureEd25519,
+        });
+        let verdict = validator.validate(&data).await;
+        assert!(matches!(verdict, ValidationResult::Valid(_)), "verifies against object trust");
+
+        // Only after verification: decode the trusted content back to the manifest.
+        assert_eq!(decode_manifest_data(&data), Some(manifest));
     }
 
     #[test]
