@@ -42,6 +42,13 @@ pub struct RepoServiceConfig {
     /// Groups to join at startup without a `SyncJoin` command (operator config).
     pub initial_groups: Vec<Name>,
     pub svs: SvSyncConfig,
+    /// Reject-without-poison two-phase ingest (D-44 / NDF F5). Default `false`
+    /// (eager, ndnd-compatible). When `true`, each joined group runs
+    /// `auto_ack: false` and serves all stored names, and the ingest loop acks
+    /// only publications that stored — so a publication that fails validation or
+    /// fetch leaves its gap OPEN and never advances the vector, and a rejected
+    /// item cannot poison convergence. See [`ingest_group`](crate::ingest::ingest_group).
+    pub two_phase_ingest: bool,
 }
 
 impl Default for RepoServiceConfig {
@@ -51,6 +58,7 @@ impl Default for RepoServiceConfig {
             response_freshness: Duration::from_secs(1),
             initial_groups: Vec::new(),
             svs: SvSyncConfig::default(),
+            two_phase_ingest: false,
         }
     }
 }
@@ -248,13 +256,21 @@ impl RepoService {
         let repo_node = group.clone().append(self.config.node_id.as_bytes());
         let (net_in_tx, net_in_rx) = mpsc::channel::<Bytes>(256);
 
+        // Two-phase (reject-without-poison) posture: advance only on a validated+stored ack, and
+        // serve every stored name (a replica holds other publishers' data). Eager leaves the
+        // config untouched (ndnd-compatible).
+        let mut svs_config = self.config.svs.clone();
+        if self.config.two_phase_ingest {
+            svs_config.svs.auto_ack = false;
+            svs_config.serve_all_stored = true;
+        }
         let mut svs = SvSync::join(
             group.clone(),
             repo_node,
             self.repo.store(),
             self.send.clone(),
             net_in_rx,
-            self.config.svs.clone(),
+            svs_config,
         );
         // Fail-closed trust: only verifiable Data is ingested (when configured).
         if let Some(v) = self.repo.ingest_validator() {
@@ -263,7 +279,13 @@ impl RepoService {
         let updates: mpsc::Receiver<SyncUpdate> = svs.take_updates();
         let svs = Arc::new(svs);
         let group_cancel = self.cancel.child_token();
-        tokio::spawn(ingest_group(Arc::clone(&svs), updates, group_cancel.clone()));
+        tokio::spawn(ingest_group(
+            Arc::clone(&svs),
+            group.clone(),
+            updates,
+            self.config.two_phase_ingest,
+            group_cancel.clone(),
+        ));
 
         self.groups.insert(
             group,
