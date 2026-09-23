@@ -3,3 +3,4 @@
 
 # Agent scratch notes (gitignored)
 .claude/
+.DS_Store

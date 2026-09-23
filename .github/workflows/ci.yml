@@ -1,6 +1,7 @@
 name: CI — ndn-repo
 
-# Depends on ndn-rs + ndn-ext via ../ path deps → sibling checkout.
+# Depends on ndn-rs + ndn-ext + ndn-radio (ndn-coding) + ndn-radio-drivers (ndn-frame-io, pulled
+# in by ndn-coding) via ../ path deps → sibling checkouts. Bump the pins together.
 
 on:
   push:
@@ -16,28 +17,35 @@ env:
 
 jobs:
   core:
-    name: repo (clippy / test / doc)
+    name: repo (fmt / clippy / test / doc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: { path: ndn-repo }
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: 36f4394884bdf7729909edc842649aca8c212db2, path: ndn-rs } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: 2a5840be79098017965517e6c975874602d7f22a, path: ndn-rs } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: 76e913dcef511a3c1d76186289a53376a83a2efa, path: ndn-ext } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: 27646a78bb0fd91a7f1fba1f295d5a9ad220fef6, path: ndn-ext } # pinned sibling; bump deliberately
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-radio", ref: f03f96242b459b82f326d3ed23803a75afcfcc16, path: ndn-radio } # pinned sibling; bump deliberately
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: 985cd9d70ce0664c6b622da29545c6aa2cd0448c, path: ndn-radio-drivers } # pinned sibling; bump deliberately
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt, clippy }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: ndn-repo }
+      # Scoped to this repo's members: `cargo fmt --all` also walks the sibling path deps,
+      # whose formatting is their own repos' gate.
       - name: Format
         working-directory: ndn-repo
-        run: cargo fmt --all -- --check
+        run: cargo fmt -p ndn-repo -p ndn-repo-cluster -- --check
       - name: Lint
         working-directory: ndn-repo
-        run: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         working-directory: ndn-repo
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features
       - name: Doc build
         working-directory: ndn-repo
-        run: cargo doc --no-deps
+        env: { RUSTDOCFLAGS: "-D warnings" }
+        run: cargo doc --no-deps --workspace --all-features
