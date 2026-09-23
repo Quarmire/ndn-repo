@@ -172,9 +172,9 @@ impl ClusterState {
     // ---- queries -------------------------------------------------------------
 
     pub fn is_live(&self, node: &NodeId, now_ns: u64) -> bool {
-        self.nodes
-            .get(node)
-            .is_some_and(|s| now_ns.saturating_sub(s.last_heartbeat_ns) <= self.config.dead_after_ns())
+        self.nodes.get(node).is_some_and(|s| {
+            now_ns.saturating_sub(s.last_heartbeat_ns) <= self.config.dead_after_ns()
+        })
     }
 
     fn has_capacity(&self, node: &NodeId) -> bool {
@@ -207,7 +207,7 @@ impl ClusterState {
     /// nodes than shards (the object isn't fully placeable then — raise redundancy or
     /// wait for nodes).
     ///
-    /// G6.5: this is filtered by [`has_capacity`](Self::has_capacity) — the **same** pool
+    /// G6.5: this is filtered by `has_capacity` — the **same** pool
     /// [`designated_claimers`](Self::designated_claimers) draws from. If it weren't, a node
     /// that lacked capacity would still occupy a shard index here while never being asked to
     /// claim, so that shard would go unstored and the node that *does* claim (further down
@@ -426,7 +426,11 @@ mod tests {
         // Each node knows its own shard index (or that it holds none).
         assert_eq!(st.shard_index_of(&n("/r/c"), 3, now), Some(0));
         assert_eq!(st.shard_index_of(&n("/r/b"), 3, now), Some(2));
-        assert_eq!(st.shard_index_of(&n("/r/d"), 3, now), None, "4th node holds no shard of 3");
+        assert_eq!(
+            st.shard_index_of(&n("/r/d"), 3, now),
+            None,
+            "4th node holds no shard of 3"
+        );
 
         // Asking for more shards than live nodes returns only the live ones (not placeable).
         assert_eq!(st.shard_holders(9, now).len(), 4);
@@ -501,7 +505,10 @@ mod tests {
         let designated = st.designated_claimers(&job, now);
         assert_eq!(designated, vec![n("/r/b"), n("/r/c"), n("/r/a")]);
         assert!(st.should_claim(&job, &n("/r/b"), now));
-        assert!(!st.should_claim(&job, &n("/r/d"), now), "full node not designated");
+        assert!(
+            !st.should_claim(&job, &n("/r/d"), now),
+            "full node not designated"
+        );
     }
 
     #[test]
@@ -571,7 +578,11 @@ mod tests {
         }
 
         let shed = st.jobs_to_release(&n("/r/a"), now);
-        assert_eq!(shed, vec![job1], "shed the over-replicated job, keep the at-target one");
+        assert_eq!(
+            shed,
+            vec![job1],
+            "shed the over-replicated job, keep the at-target one"
+        );
         // A non-full node sheds nothing.
         assert!(st.jobs_to_release(&n("/r/b"), now).is_empty());
     }

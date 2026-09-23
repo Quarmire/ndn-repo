@@ -47,7 +47,7 @@ pub struct RepoServiceConfig {
     /// `auto_ack: false` and serves all stored names, and the ingest loop acks
     /// only publications that stored — so a publication that fails validation or
     /// fetch leaves its gap OPEN and never advances the vector, and a rejected
-    /// item cannot poison convergence. See [`ingest_group`](crate::ingest::ingest_group).
+    /// item cannot poison convergence. See [`ingest_group`].
     pub two_phase_ingest: bool,
 }
 
@@ -64,7 +64,7 @@ impl Default for RepoServiceConfig {
 }
 
 /// Out-of-band control over a running [`RepoService`] — e.g. a distributed
-/// coordinator ([`ndn-repo-cluster`]) telling this node to start/stop holding
+/// coordinator (`ndn-repo-cluster`) telling this node to start/stop holding
 /// a group, without going through the on-wire command interface.
 #[derive(Clone, Debug)]
 pub enum RepoControl {
@@ -181,7 +181,9 @@ impl RepoService {
     async fn dispatch(&mut self, raw: Bytes) {
         match raw.first() {
             Some(&0x05) => {
-                let Ok(interest) = Interest::decode(raw.clone()) else { return };
+                let Ok(interest) = Interest::decode(raw.clone()) else {
+                    return;
+                };
                 let name = (*interest.name).clone();
                 // Command Interest under the repo prefix?
                 if name.has_prefix(&self.repo_prefix)
@@ -289,7 +291,11 @@ impl RepoService {
 
         self.groups.insert(
             group,
-            GroupHandle { net_in: net_in_tx, svs, cancel: group_cancel },
+            GroupHandle {
+                net_in: net_in_tx,
+                svs,
+                cancel: group_cancel,
+            },
         );
     }
 
@@ -347,7 +353,10 @@ mod tests {
     }
 
     /// Spawn a service and return (its inbound sender, its outbound receiver).
-    fn spawn_service(repo: Repo, repo_prefix: Name) -> (mpsc::Sender<Bytes>, mpsc::Receiver<Bytes>) {
+    fn spawn_service(
+        repo: Repo,
+        repo_prefix: Name,
+    ) -> (mpsc::Sender<Bytes>, mpsc::Receiver<Bytes>) {
         let (out_tx, out_rx) = mpsc::channel::<Bytes>(256);
         let (in_tx, in_rx) = mpsc::channel::<Bytes>(256);
         let svc = RepoService::new(repo, repo_prefix, out_tx, RepoServiceConfig::default());
@@ -397,7 +406,11 @@ mod tests {
             ..Default::default()
         });
         to_svc
-            .send(InterestBuilder::new(n("/repo/cmd")).app_parameters(join.encode().to_vec()).build())
+            .send(
+                InterestBuilder::new(n("/repo/cmd"))
+                    .app_parameters(join.encode().to_vec())
+                    .build(),
+            )
             .await
             .unwrap();
         // Drain the command reply.

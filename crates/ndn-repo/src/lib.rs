@@ -15,7 +15,7 @@
 //! * **Blob push** — `BlobFetch` carries Data wires inline (stored directly)
 //!   or a name to fetch ([`Repo::take_pending_fetches`](repo::Repo::take_pending_fetches)).
 //!
-//! The [`Repo`](repo::Repo) engine is transport-agnostic; an embedder connects
+//! The [`Repo`] engine is transport-agnostic; an embedder connects
 //! its command interface to a forwarder face. Distributed operation
 //! (replication, capacity-aware placement, heartbeat failover — cf.
 //! `a-thieme/repo`) is a coordination layer above this single-node core.
@@ -27,8 +27,8 @@ pub mod store;
 pub mod tlv;
 
 pub use ingest::ingest_group;
+pub use repo::{Repo, RepoError};
 pub use service::{RepoControl, RepoService, RepoServiceConfig};
 #[cfg(feature = "fjall-store")]
 pub use store::FjallStore;
-pub use repo::{Repo, RepoError};
 pub use tlv::{BlobFetch, RepoCmd, RepoCmdRes, SyncJoin, SyncLeave, sync_protocol_svs_v3};

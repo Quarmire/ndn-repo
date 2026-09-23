@@ -112,7 +112,8 @@ impl ErasureManifest {
         if hashes.len() != 32 * n as usize {
             return None;
         }
-        let shard_hashes = hashes.chunks_exact(32).map(|c| c.try_into().unwrap()).collect();
+        // Length checked above, so the remainder is empty.
+        let shard_hashes = hashes.as_chunks::<32>().0.to_vec();
         Some(Self {
             object,
             k,
@@ -196,7 +197,12 @@ pub fn reconstruct(manifest: &ErasureManifest, shards: &[(u16, Bytes)]) -> Optio
     for (index, bytes) in shards {
         // Integrity gate: only a shard whose bytes match the manifest hash for its index
         // is fed to the codec.
-        if manifest.shard_hashes.get(*index as usize).map(|h| sha256(bytes) == *h) != Some(true) {
+        if manifest
+            .shard_hashes
+            .get(*index as usize)
+            .map(|h| sha256(bytes) == *h)
+            != Some(true)
+        {
             continue;
         }
         if dec.absorb(*index, bytes.clone()).is_err() {
@@ -353,8 +359,11 @@ mod tests {
         let data = vec![7u8; 300];
         let (shards, manifest) = encode_object(&obj(), &data, 4, 2).unwrap();
         // Only 3 < K=4 shards → no recovery.
-        let too_few: Vec<(u16, Bytes)> =
-            shards.iter().take(3).map(|s| (s.index, s.bytes.clone())).collect();
+        let too_few: Vec<(u16, Bytes)> = shards
+            .iter()
+            .take(3)
+            .map(|s| (s.index, s.bytes.clone()))
+            .collect();
         assert!(reconstruct(&manifest, &too_few).is_none());
     }
 
@@ -372,14 +381,22 @@ mod tests {
         // Reader gathers shards over the "network" (here the map) and reconstructs.
         let got = reconstruct_with(&manifest, |name| cluster.get(name).cloned())
             .expect("reconstructs from the stored shards");
-        assert_eq!(got.as_ref(), data.as_slice(), "object recovered from distributed shards");
+        assert_eq!(
+            got.as_ref(),
+            data.as_slice(),
+            "object recovered from distributed shards"
+        );
 
         // Lose R=2 holders (drop two shard Data) — any K=4 of the 6 still recover.
         cluster.remove(&manifest.shard_name(0));
         cluster.remove(&manifest.shard_name(3));
         let got = reconstruct_with(&manifest, |name| cluster.get(name).cloned())
             .expect("K shards remain");
-        assert_eq!(got.as_ref(), data.as_slice(), "recovered despite two lost holders");
+        assert_eq!(
+            got.as_ref(),
+            data.as_slice(),
+            "recovered despite two lost holders"
+        );
 
         // Lose a third (only 3 < K reachable) — reconstruction fails (no false data).
         cluster.remove(&manifest.shard_name(1));
@@ -430,14 +447,17 @@ mod tests {
         let (_, manifest) = encode_object(&obj(), &[1, 2, 3], 4, 2).unwrap();
         let decoded = ErasureManifest::from_bytes(&manifest.to_bytes()).expect("parses");
         assert_eq!(decoded, manifest);
-        assert!(ErasureManifest::from_bytes(&[0u8; 4]).is_none(), "truncated rejected");
+        assert!(
+            ErasureManifest::from_bytes(&[0u8; 4]).is_none(),
+            "truncated rejected"
+        );
     }
 
     #[tokio::test]
     async fn signed_manifest_verifies_against_object_trust_and_round_trips() {
         use ndn_security::signer::Ed25519Signer;
         use ndn_security::trust_schema::{NamePattern, PatternComponent, SchemaRule, TrustSchema};
-        use ndn_security::{Validator, ValidationResult};
+        use ndn_security::{ValidationResult, Validator};
 
         let (_, manifest) = encode_object(&obj(), &[1, 2, 3, 4, 5], 3, 2).unwrap();
         let key_name: Name = "/repo/KEY/k1".parse().unwrap();
@@ -446,8 +466,15 @@ mod tests {
         // Publish the manifest as a signed Data named under the object's namespace.
         let wire = manifest_data(&manifest, &signer).expect("sign manifest");
         let data = Data::decode(wire).unwrap();
-        assert_eq!(*data.name, manifest_name(&obj()), "manifest named <object>/EC/manifest");
-        assert!(data.sig_info().is_some(), "manifest is signed (not a bare digest)");
+        assert_eq!(
+            *data.name,
+            manifest_name(&obj()),
+            "manifest named <object>/EC/manifest"
+        );
+        assert!(
+            data.sig_info().is_some(),
+            "manifest is signed (not a bare digest)"
+        );
 
         // A reader validates it against the object's trust before using it.
         let mut schema = TrustSchema::new();
@@ -456,18 +483,23 @@ mod tests {
             key_pattern: NamePattern(vec![PatternComponent::MultiCapture("_".into())]),
         });
         let validator = Validator::new(schema);
-        validator.cert_cache().insert(ndn_security::cert_cache::Certificate {
-            name: std::sync::Arc::new(key_name),
-            public_key: Bytes::copy_from_slice(&signer.public_key_bytes()),
-            valid_from: 0,
-            valid_until: u64::MAX,
-            issuer: None,
-            signed_region: None,
-            sig_value: None,
-            sig_type: ndn_packet::SignatureType::SignatureEd25519,
-        });
+        validator
+            .cert_cache()
+            .insert(ndn_security::cert_cache::Certificate {
+                name: std::sync::Arc::new(key_name),
+                public_key: Bytes::copy_from_slice(&signer.public_key_bytes()),
+                valid_from: 0,
+                valid_until: u64::MAX,
+                issuer: None,
+                signed_region: None,
+                sig_value: None,
+                sig_type: ndn_packet::SignatureType::SignatureEd25519,
+            });
         let verdict = validator.validate(&data).await;
-        assert!(matches!(verdict, ValidationResult::Valid(_)), "verifies against object trust");
+        assert!(
+            matches!(verdict, ValidationResult::Valid(_)),
+            "verifies against object trust"
+        );
 
         // Only after verification: decode the trusted content back to the manifest.
         assert_eq!(decode_manifest_data(&data), Some(manifest));
@@ -476,7 +508,11 @@ mod tests {
     #[test]
     fn manifest_carries_a_hash_per_shard() {
         let (shards, manifest) = encode_object(&obj(), &[9u8; 800], 4, 2).unwrap();
-        assert_eq!(manifest.shard_hashes.len(), shards.len(), "one hash per shard");
+        assert_eq!(
+            manifest.shard_hashes.len(),
+            shards.len(),
+            "one hash per shard"
+        );
         for s in &shards {
             assert_eq!(
                 manifest.shard_hashes[s.index as usize],
@@ -499,12 +535,19 @@ mod tests {
         tampered[1].1 = Bytes::from(vec![0xFFu8; tampered[1].1.len()]);
 
         let got = reconstruct(&manifest, &tampered).expect("K good shards remain");
-        assert_eq!(got.as_ref(), data.as_slice(), "a forged shard never corrupts the output");
+        assert_eq!(
+            got.as_ref(),
+            data.as_slice(),
+            "a forged shard never corrupts the output"
+        );
 
         // If corrupting it leaves only 3 good shards (< K), recovery fails closed rather
         // than absorbing bad bytes.
-        let mut starved: Vec<(u16, Bytes)> =
-            shards.iter().take(4).map(|s| (s.index, s.bytes.clone())).collect();
+        let mut starved: Vec<(u16, Bytes)> = shards
+            .iter()
+            .take(4)
+            .map(|s| (s.index, s.bytes.clone()))
+            .collect();
         starved[0].1 = Bytes::from(vec![0xFFu8; starved[0].1.len()]);
         assert!(
             reconstruct(&manifest, &starved).is_none(),

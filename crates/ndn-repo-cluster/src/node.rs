@@ -101,11 +101,23 @@ impl ClusterNode {
     /// Fold a gossiped coordination message into the cluster view.
     pub fn observe(&mut self, msg: ClusterMsg, now_ns: u64) {
         match msg {
-            ClusterMsg::Heartbeat { node, capacity_used, capacity_total, .. } => {
-                self.state.observe_heartbeat(node, capacity_used, capacity_total, now_ns);
+            ClusterMsg::Heartbeat {
+                node,
+                capacity_used,
+                capacity_total,
+                ..
+            } => {
+                self.state
+                    .observe_heartbeat(node, capacity_used, capacity_total, now_ns);
             }
-            ClusterMsg::Job { target, replication_factor, erasure } => match erasure {
-                Some((k, n)) => self.state.observe_erasure_job(target, k, n.saturating_sub(k)),
+            ClusterMsg::Job {
+                target,
+                replication_factor,
+                erasure,
+            } => match erasure {
+                Some((k, n)) => self
+                    .state
+                    .observe_erasure_job(target, k, n.saturating_sub(k)),
                 None => self.state.observe_job(target, replication_factor as usize),
             },
             ClusterMsg::Claim { job, node, ts } => self.state.observe_claim(job, node, ts),
@@ -119,8 +131,12 @@ impl ClusterNode {
     pub fn tick(&mut self, now_ns: u64) -> TickOutcome {
         self.epoch += 1;
         // Our own heartbeat — recorded locally so we count ourselves live.
-        self.state
-            .observe_heartbeat(self.self_id.clone(), self.capacity_used, self.capacity_total, now_ns);
+        self.state.observe_heartbeat(
+            self.self_id.clone(),
+            self.capacity_used,
+            self.capacity_total,
+            now_ns,
+        );
         let mut out = TickOutcome {
             publish: vec![ClusterMsg::Heartbeat {
                 node: self.self_id.clone(),
@@ -134,11 +150,15 @@ impl ClusterNode {
         // Shed first (frees capacity), then claim.
         for job in self.state.jobs_to_release(&self.self_id, now_ns) {
             self.state.observe_release(&job, &self.self_id);
-            out.publish.push(ClusterMsg::Release { job: job.clone(), node: self.self_id.clone() });
+            out.publish.push(ClusterMsg::Release {
+                job: job.clone(),
+                node: self.self_id.clone(),
+            });
             out.drop.push(job);
         }
         for job in self.state.jobs_to_claim(&self.self_id, now_ns) {
-            self.state.observe_claim(job.clone(), self.self_id.clone(), now_ns);
+            self.state
+                .observe_claim(job.clone(), self.self_id.clone(), now_ns);
             out.publish.push(ClusterMsg::Claim {
                 job: job.clone(),
                 node: self.self_id.clone(),
@@ -245,7 +265,10 @@ mod tests {
     impl Sim {
         fn new(ids: &[&str], capacity_total: u64) -> Self {
             Self {
-                nodes: ids.iter().map(|id| ClusterNode::new(n(id), cfg(), capacity_total)).collect(),
+                nodes: ids
+                    .iter()
+                    .map(|id| ClusterNode::new(n(id), cfg(), capacity_total))
+                    .collect(),
                 alive: vec![true; ids.len()],
                 now: 1_000,
             }
@@ -294,7 +317,10 @@ mod tests {
         /// node's view freezes at its death, so it must not be the observer).
         fn live_claimants(&self, target: &str) -> usize {
             let alive = self.alive.iter().position(|&a| a).expect("a node is alive");
-            self.nodes[alive].state().live_claimants(&n(target), self.now).len()
+            self.nodes[alive]
+                .state()
+                .live_claimants(&n(target), self.now)
+                .len()
         }
     }
 
@@ -323,9 +349,15 @@ mod tests {
         assert_eq!(sim.live_claimants("/obj/data"), 3);
 
         // Find a current claimant and kill it (node 0 is alive here).
-        let claimants = sim.nodes[0].state().live_claimants(&n("/obj/data"), sim.now);
+        let claimants = sim.nodes[0]
+            .state()
+            .live_claimants(&n("/obj/data"), sim.now);
         let victim = claimants[0].clone();
-        let victim_idx = sim.nodes.iter().position(|node| *node.self_id() == victim).unwrap();
+        let victim_idx = sim
+            .nodes
+            .iter()
+            .position(|node| *node.self_id() == victim)
+            .unwrap();
         sim.kill(victim_idx);
 
         // Let the dead node age out (>3 rounds of silence) and survivors react.
@@ -339,7 +371,9 @@ mod tests {
         );
         // The victim is no longer a live claimant (as a survivor sees it).
         let observer = sim.alive.iter().position(|&a| a).unwrap();
-        let now_claimants = sim.nodes[observer].state().live_claimants(&n("/obj/data"), sim.now);
+        let now_claimants = sim.nodes[observer]
+            .state()
+            .live_claimants(&n("/obj/data"), sim.now);
         assert!(!now_claimants.contains(&victim));
     }
 
@@ -347,7 +381,10 @@ mod tests {
     fn erasure_job_places_n_holders_each_with_a_distinct_shard() {
         // K=4, R=2 ⇒ N=6 shards: exactly 6 of the 7 nodes hold one shard each, and the
         // shard indices cover 0..6 with no duplicates (so any K=4 reconstruct the object).
-        let mut sim = Sim::new(&["/r/a", "/r/b", "/r/c", "/r/d", "/r/e", "/r/f", "/r/g"], 1000);
+        let mut sim = Sim::new(
+            &["/r/a", "/r/b", "/r/c", "/r/d", "/r/e", "/r/f", "/r/g"],
+            1000,
+        );
         sim.announce_erasure_all("/obj/ec", 4, 2);
         for _ in 0..5 {
             sim.round();
@@ -361,7 +398,11 @@ mod tests {
             .filter_map(|node| node.shard_plan(&n("/obj/ec"), sim.now).map(|p| p.index))
             .collect();
         plans.sort_unstable();
-        assert_eq!(plans, vec![0, 1, 2, 3, 4, 5], "6 distinct shard indices, 0..N");
+        assert_eq!(
+            plans,
+            vec![0, 1, 2, 3, 4, 5],
+            "6 distinct shard indices, 0..N"
+        );
         // And the plan carries the (k, n) the embedder needs to name + reconstruct.
         let holder = sim
             .nodes
@@ -376,9 +417,16 @@ mod tests {
         let mut node = ClusterNode::new(n("/r/solo"), cfg(), 1000);
         node.announce_job(n("/obj/x"), 0);
         let out = node.tick(1_000);
-        assert!(matches!(out.publish.first(), Some(ClusterMsg::Heartbeat { .. })));
+        assert!(matches!(
+            out.publish.first(),
+            Some(ClusterMsg::Heartbeat { .. })
+        ));
         // Solo node is designated for the under-replicated job → claims + ingests.
         assert_eq!(out.ingest, vec![n("/obj/x")]);
-        assert!(out.publish.iter().any(|m| matches!(m, ClusterMsg::Claim { .. })));
+        assert!(
+            out.publish
+                .iter()
+                .any(|m| matches!(m, ClusterMsg::Claim { .. }))
+        );
     }
 }

@@ -8,7 +8,7 @@
 //!
 //! The design is fully **decentralised**: nodes gossip heartbeats + job claims
 //! over an SVS coordination group, fold them into an identical, converging
-//! [`ClusterState`](coord::ClusterState), and each independently runs the same
+//! [`ClusterState`], and each independently runs the same
 //! deterministic placement function — no coordinator, no locks. This is a
 //! *coordination layer*, not a wire standard; it composes above the
 //! ndnd-compatible single-node repo rather than replacing its command protocol.

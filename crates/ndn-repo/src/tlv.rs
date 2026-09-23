@@ -92,11 +92,17 @@ pub struct RepoCmdRes {
 
 impl RepoCmdRes {
     pub fn ok() -> Self {
-        Self { status: 200, message: String::new() }
+        Self {
+            status: 200,
+            message: String::new(),
+        }
     }
 
     pub fn err(status: u64, message: impl Into<String>) -> Self {
-        Self { status, message: message.into() }
+        Self {
+            status,
+            message: message.into(),
+        }
     }
 
     pub fn encode(&self) -> Bytes {
@@ -284,7 +290,7 @@ mod tests {
         assert_eq!(comps.len(), 3);
         assert_eq!(comps[0].value.as_ref(), b"ndn");
         assert_eq!(comps[1].value.as_ref(), b"svs");
-        assert_eq!(comps[2].as_segment().is_none(), true);
+        assert!(comps[2].as_segment().is_none());
     }
 
     #[test]
@@ -332,7 +338,12 @@ mod tests {
         let res = RepoCmdRes::err(500, "boom");
         let decoded = RepoCmdRes::decode(res.encode()).unwrap();
         assert_eq!(decoded, res);
-        assert_eq!(RepoCmdRes::decode(RepoCmdRes::ok().encode()).unwrap().status, 200);
+        assert_eq!(
+            RepoCmdRes::decode(RepoCmdRes::ok().encode())
+                .unwrap()
+                .status,
+            200
+        );
     }
 
     #[test]

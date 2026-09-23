@@ -1,5 +1,5 @@
 //! SVS group ingestion driver. The repo joins a group by building an
-//! [`SvSync`](ndn_sync::SvSync) over [`Repo::store`](crate::Repo::store) and
+//! [`SvSync`] over [`Repo::store`](crate::Repo::store) and
 //! running [`ingest_group`]: every new publication is fetched and its raw
 //! wire stored, so the same store both **ingests** (here) and **serves** (the
 //! SvSync demux answers Interests from it). This is ndnd's repo model — a
@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 ///   runs `auto_ack: false`, so a merge only *detects* gaps — the vector
 ///   advances solely through [`ack`](ndn_sync::SyncHandle::ack). This loop acks
 ///   **only** publications that actually stored (fetched AND passed the
-///   [`IngestValidator`]), and **stops at the first hole**, so a rejected/failed
+///   [`IngestValidator`](ndn_sync::IngestValidator)), and **stops at the first hole**, so a rejected/failed
 ///   item never advances the vector past itself: its gap stays open and
 ///   re-derives, and convergence is never poisoned by an item the node does not
 ///   truly hold. `group` is needed to form the canonical data name for the
@@ -125,14 +125,25 @@ mod tests {
         });
 
         let cfg = SvSyncConfig {
-            svs: SvsConfig { sync_interval: Duration::from_millis(50), jitter_ms: 0, ..Default::default() },
+            svs: SvsConfig {
+                sync_interval: Duration::from_millis(50),
+                jitter_ms: 0,
+                ..Default::default()
+            },
             fetch_timeout: Duration::from_secs(2),
             ..Default::default()
         };
 
         // Producer.
         let producer_store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let svs_a = SvSync::join(group.clone(), producer.clone(), producer_store, a_out, a_in_rx, cfg.clone());
+        let svs_a = SvSync::join(
+            group.clone(),
+            producer.clone(),
+            producer_store,
+            a_out,
+            a_in_rx,
+            cfg.clone(),
+        );
 
         // Repo: an SvSync over the repo's store + the ingestion driver.
         let repo = Repo::new(Arc::new(MemoryStore::new()));
@@ -140,7 +151,13 @@ mod tests {
         let updates = svs_r.take_updates();
         let svs_r = Arc::new(svs_r);
         let cancel = CancellationToken::new();
-        tokio::spawn(ingest_group(Arc::clone(&svs_r), group.clone(), updates, false, cancel.clone()));
+        tokio::spawn(ingest_group(
+            Arc::clone(&svs_r),
+            group.clone(),
+            updates,
+            false,
+            cancel.clone(),
+        ));
 
         // Producer publishes.
         svs_a.publish_data(b"a-paper").await.expect("publish");
@@ -211,24 +228,45 @@ mod tests {
         });
 
         let cfg = SvSyncConfig {
-            svs: SvsConfig { sync_interval: Duration::from_millis(50), jitter_ms: 0, ..Default::default() },
+            svs: SvsConfig {
+                sync_interval: Duration::from_millis(50),
+                jitter_ms: 0,
+                ..Default::default()
+            },
             fetch_timeout: Duration::from_secs(2),
             ..Default::default()
         };
 
         let producer_store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let svs_a = SvSync::join(group.clone(), producer.clone(), producer_store, a_out, a_in_rx, cfg.clone());
+        let svs_a = SvSync::join(
+            group.clone(),
+            producer.clone(),
+            producer_store,
+            a_out,
+            a_in_rx,
+            cfg.clone(),
+        );
 
         // Two-phase repo: auto_ack off + a gate that rejects the poison content.
         let repo = Repo::new(Arc::new(MemoryStore::new()));
         let mut repo_cfg = cfg.clone();
         repo_cfg.svs.auto_ack = false;
         repo_cfg.serve_all_stored = true;
-        let mut svs_r = SvSync::join(group.clone(), repo_node, repo.store(), r_out, r_in_rx, repo_cfg);
+        let mut svs_r = SvSync::join(
+            group.clone(),
+            repo_node,
+            repo.store(),
+            r_out,
+            r_in_rx,
+            repo_cfg,
+        );
         svs_r.set_ingest_validator(Arc::new(|wire: Bytes| {
             Box::pin(async move {
                 match ndn_packet::Data::decode(wire) {
-                    Ok(d) => d.content().map(|c| c.as_ref() != b"POISON").unwrap_or(false),
+                    Ok(d) => d
+                        .content()
+                        .map(|c| c.as_ref() != b"POISON")
+                        .unwrap_or(false),
                     Err(_) => false,
                 }
             }) as std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
@@ -236,7 +274,13 @@ mod tests {
         let updates = svs_r.take_updates();
         let svs_r = Arc::new(svs_r);
         let cancel = CancellationToken::new();
-        tokio::spawn(ingest_group(Arc::clone(&svs_r), group.clone(), updates, true, cancel.clone()));
+        tokio::spawn(ingest_group(
+            Arc::clone(&svs_r),
+            group.clone(),
+            updates,
+            true,
+            cancel.clone(),
+        ));
 
         // Producer publishes a valid Block, then a poison one.
         svs_a.publish_data(b"good-1").await.expect("publish 1");

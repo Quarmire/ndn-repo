@@ -22,8 +22,7 @@ use tokio::sync::mpsc;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -109,12 +108,29 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--socket" => socket = it.next().ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?,
-            "--prefix" => prefix = it.next().ok_or_else(|| anyhow::anyhow!("--prefix needs a value"))?,
-            "--store" => store_dir = it.next().ok_or_else(|| anyhow::anyhow!("--store needs a value"))?,
+            "--socket" => {
+                socket = it
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?
+            }
+            "--prefix" => {
+                prefix = it
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--prefix needs a value"))?
+            }
+            "--store" => {
+                store_dir = it
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--store needs a value"))?
+            }
             "--group" => {
-                let g = it.next().ok_or_else(|| anyhow::anyhow!("--group needs a value"))?;
-                groups.push(g.parse().map_err(|_| anyhow::anyhow!("bad group name: {g}"))?);
+                let g = it
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--group needs a value"))?;
+                groups.push(
+                    g.parse()
+                        .map_err(|_| anyhow::anyhow!("bad group name: {g}"))?,
+                );
             }
             "-h" | "--help" => {
                 eprintln!(
@@ -128,7 +144,9 @@ fn parse_args() -> anyhow::Result<Args> {
 
     Ok(Args {
         socket,
-        prefix: prefix.parse().map_err(|_| anyhow::anyhow!("bad prefix: {prefix}"))?,
+        prefix: prefix
+            .parse()
+            .map_err(|_| anyhow::anyhow!("bad prefix: {prefix}"))?,
         store_dir,
         groups,
     })

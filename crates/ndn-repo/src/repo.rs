@@ -120,7 +120,11 @@ impl Repo {
         {
             return RepoCmdRes::err(400, "invalid history snapshot threshold");
         }
-        self.inner.groups.lock().expect("groups poisoned").insert(group);
+        self.inner
+            .groups
+            .lock()
+            .expect("groups poisoned")
+            .insert(group);
         RepoCmdRes::ok()
     }
 
@@ -128,7 +132,12 @@ impl Repo {
         let Some(group) = l.group else {
             return RepoCmdRes::err(400, "missing group name");
         };
-        let removed = self.inner.groups.lock().expect("groups poisoned").remove(&group);
+        let removed = self
+            .inner
+            .groups
+            .lock()
+            .expect("groups poisoned")
+            .remove(&group);
         if removed {
             RepoCmdRes::ok()
         } else {
@@ -174,7 +183,13 @@ impl Repo {
 
     /// The SVS group prefixes currently joined.
     pub fn joined_groups(&self) -> Vec<Name> {
-        self.inner.groups.lock().expect("groups poisoned").iter().cloned().collect()
+        self.inner
+            .groups
+            .lock()
+            .expect("groups poisoned")
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Drain the names requested via `BlobFetch`-by-name for the embedder to
@@ -200,7 +215,10 @@ mod tests {
         let repo = repo();
         let name: Name = "/g/obj/v=1/seg=0".parse().unwrap();
         let wire = DataBuilder::new(name.clone(), b"payload").build();
-        let cmd = RepoCmd::BlobFetch(BlobFetch { name: None, data: vec![wire.clone()] });
+        let cmd = RepoCmd::BlobFetch(BlobFetch {
+            name: None,
+            data: vec![wire.clone()],
+        });
 
         let res = repo.handle_command(&cmd.encode());
         assert_eq!(res.status, 200);
@@ -239,7 +257,10 @@ mod tests {
         assert_eq!(repo.handle_command(&leave_bad.encode()).status, 500);
 
         // Leave the joined group → ok.
-        let leave = RepoCmd::SyncLeave(SyncLeave { group: Some(group), ..Default::default() });
+        let leave = RepoCmd::SyncLeave(SyncLeave {
+            group: Some(group),
+            ..Default::default()
+        });
         assert_eq!(repo.handle_command(&leave.encode()).status, 200);
         assert!(repo.joined_groups().is_empty());
     }
@@ -252,7 +273,10 @@ mod tests {
             data: vec![],
         });
         assert_eq!(repo.handle_command(&cmd.encode()).status, 200);
-        assert_eq!(repo.take_pending_fetches(), vec!["/g/want".parse().unwrap()]);
+        assert_eq!(
+            repo.take_pending_fetches(),
+            vec!["/g/want".parse().unwrap()]
+        );
         assert!(repo.take_pending_fetches().is_empty(), "drained");
     }
 
@@ -271,7 +295,11 @@ mod tests {
         let wire = DataBuilder::new("/g/x/v=1".parse::<Name>().unwrap(), b"hi").build();
 
         // No validator → no gate (open ingestion, ndnd's IgnoreValidity).
-        assert!(Repo::new(Arc::new(MemoryStore::new())).ingest_validator().is_none());
+        assert!(
+            Repo::new(Arc::new(MemoryStore::new()))
+                .ingest_validator()
+                .is_none()
+        );
 
         // A validator-equipped repo gates ingestion on real authentication: an
         // unauthenticated (digest-only) Data is rejected even under accept-all,

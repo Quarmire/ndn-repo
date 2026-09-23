@@ -1,4 +1,4 @@
-//! Durable [`DataStore`] backends for the repo. The repo is built over the
+//! Durable [`DataStore`](ndn_sync::DataStore) backends for the repo. The repo is built over the
 //! `ndn_sync::DataStore` trait, so storage is **pluggable** — `MemoryStore`
 //! (process-lifetime) ships in `ndn-sync`; [`FjallStore`] here adds on-disk
 //! persistence so a repo survives restarts. Any `DataStore` impl works; an
@@ -109,7 +109,10 @@ mod tests {
         store.insert(name.clone(), Bytes::from_static(b"wire"));
         assert_eq!(store.get(&name).as_deref(), Some(&b"wire"[..]));
         // CanBePrefix: a Data under /g/obj is found by its prefix.
-        assert_eq!(store.find_under(&n("/g/obj")).as_deref(), Some(&b"wire"[..]));
+        assert_eq!(
+            store.find_under(&n("/g/obj")).as_deref(),
+            Some(&b"wire"[..])
+        );
         assert!(store.find_under(&n("/other")).is_none());
     }
 

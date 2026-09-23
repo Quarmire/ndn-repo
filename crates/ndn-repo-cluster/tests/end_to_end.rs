@@ -66,7 +66,10 @@ fn spawn_repo_node(
 
     let cfg = RepoServiceConfig {
         initial_groups,
-        svs: ndn_sync::SvSyncConfig { svs: fast_svs(), ..Default::default() },
+        svs: ndn_sync::SvSyncConfig {
+            svs: fast_svs(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut svc = RepoService::new(repo.clone(), repo_prefix, out_tx, cfg);
@@ -118,12 +121,20 @@ async fn repo_service_ingests_from_producer_over_forwarder() {
         producer_handle,
         data_group.clone(),
         name("/cl/data/producer"),
-        ndn_app::PublisherConfig { svs: fast_svs(), ..Default::default() },
+        ndn_app::PublisherConfig {
+            svs: fast_svs(),
+            ..Default::default()
+        },
     )
     .expect("publisher");
 
     // Repo joins the group and ingests whatever is published.
-    let repo = spawn_repo_node(repo_handle, name("/cl/repo"), vec![data_group.clone()], None);
+    let repo = spawn_repo_node(
+        repo_handle,
+        name("/cl/repo"),
+        vec![data_group.clone()],
+        None,
+    );
 
     // Let SVS memberships establish, then publish.
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -196,7 +207,10 @@ fn spawn_cluster_node(
         Arc::new(MemoryStore::new()),
         coord_out_tx,
         coord_in_rx,
-        SvSyncConfig { svs: fast_svs(), ..Default::default() },
+        SvSyncConfig {
+            svs: fast_svs(),
+            ..Default::default()
+        },
     );
     let mut updates = coord_svs.take_updates();
     let coord_svs = Arc::new(coord_svs);
@@ -259,8 +273,9 @@ fn spawn_cluster_node(
     );
     node.announce_job(data_group, replication_factor);
 
-    let publish_msg: Arc<dyn Fn(Bytes) + Send + Sync> =
-        Arc::new(move |b: Bytes| { let _ = pub_tx.try_send(b); });
+    let publish_msg: Arc<dyn Fn(Bytes) + Send + Sync> = Arc::new(move |b: Bytes| {
+        let _ = pub_tx.try_send(b);
+    });
     let capacity: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| 0);
     tokio::spawn(ndn_repo_cluster::run(
         node,
@@ -320,9 +335,33 @@ async fn cluster_replicates_object_to_replication_factor_over_forwarder() {
 
     let cancel = CancellationToken::new();
     let repos = [
-        spawn_cluster_node(0, h_d0, h_c0, data_group.clone(), coord_group.clone(), replication_factor, cancel.clone()),
-        spawn_cluster_node(1, h_d1, h_c1, data_group.clone(), coord_group.clone(), replication_factor, cancel.clone()),
-        spawn_cluster_node(2, h_d2, h_c2, data_group.clone(), coord_group.clone(), replication_factor, cancel.clone()),
+        spawn_cluster_node(
+            0,
+            h_d0,
+            h_c0,
+            data_group.clone(),
+            coord_group.clone(),
+            replication_factor,
+            cancel.clone(),
+        ),
+        spawn_cluster_node(
+            1,
+            h_d1,
+            h_c1,
+            data_group.clone(),
+            coord_group.clone(),
+            replication_factor,
+            cancel.clone(),
+        ),
+        spawn_cluster_node(
+            2,
+            h_d2,
+            h_c2,
+            data_group.clone(),
+            coord_group.clone(),
+            replication_factor,
+            cancel.clone(),
+        ),
     ];
 
     // Producer publishes the object once memberships have a chance to form.
@@ -330,7 +369,10 @@ async fn cluster_replicates_object_to_replication_factor_over_forwarder() {
         producer_handle,
         data_group.clone(),
         name("/cl/data/producer"),
-        ndn_app::PublisherConfig { svs: fast_svs(), ..Default::default() },
+        ndn_app::PublisherConfig {
+            svs: fast_svs(),
+            ..Default::default()
+        },
     )
     .expect("publisher");
     tokio::time::sleep(Duration::from_millis(400)).await;

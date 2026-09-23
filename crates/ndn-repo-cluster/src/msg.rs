@@ -54,7 +54,12 @@ impl ClusterMsg {
     pub fn encode(&self) -> Bytes {
         let mut w = TlvWriter::new();
         match self {
-            ClusterMsg::Heartbeat { node, capacity_used, capacity_total, epoch } => {
+            ClusterMsg::Heartbeat {
+                node,
+                capacity_used,
+                capacity_total,
+                epoch,
+            } => {
                 w.write_nested(t::HEARTBEAT, |w| {
                     name_container(w, t::NODE, node);
                     nni(w, t::CAP_USED, *capacity_used);
@@ -62,7 +67,11 @@ impl ClusterMsg {
                     nni(w, t::EPOCH, *epoch);
                 });
             }
-            ClusterMsg::Job { target, replication_factor, erasure } => {
+            ClusterMsg::Job {
+                target,
+                replication_factor,
+                erasure,
+            } => {
                 w.write_nested(t::JOB, |w| {
                     name_container(w, t::TARGET, target);
                     nni(w, t::REPL, *replication_factor);
@@ -106,7 +115,8 @@ impl ClusterMsg {
             }
             t::JOB => {
                 let f = Fields::parse(val);
-                let erasure = (f.ec_k != 0 && f.ec_n != 0).then_some((f.ec_k as u16, f.ec_n as u16));
+                let erasure =
+                    (f.ec_k != 0 && f.ec_n != 0).then_some((f.ec_k as u16, f.ec_n as u16));
                 Some(ClusterMsg::Job {
                     target: f.target?,
                     replication_factor: f.repl,
@@ -123,7 +133,10 @@ impl ClusterMsg {
             }
             t::RELEASE => {
                 let f = Fields::parse(val);
-                Some(ClusterMsg::Release { job: f.job?, node: f.node? })
+                Some(ClusterMsg::Release {
+                    job: f.job?,
+                    node: f.node?,
+                })
             }
             _ => None,
         }
@@ -221,10 +234,25 @@ mod tests {
     #[test]
     fn job_claim_release_roundtrip() {
         for m in [
-            ClusterMsg::Job { target: n("/obj/big"), replication_factor: 3, erasure: None },
-            ClusterMsg::Job { target: n("/obj/ec"), replication_factor: 0, erasure: Some((4, 6)) },
-            ClusterMsg::Claim { job: n("/obj/big"), node: n("/r/a"), ts: 99 },
-            ClusterMsg::Release { job: n("/obj/big"), node: n("/r/a") },
+            ClusterMsg::Job {
+                target: n("/obj/big"),
+                replication_factor: 3,
+                erasure: None,
+            },
+            ClusterMsg::Job {
+                target: n("/obj/ec"),
+                replication_factor: 0,
+                erasure: Some((4, 6)),
+            },
+            ClusterMsg::Claim {
+                job: n("/obj/big"),
+                node: n("/r/a"),
+                ts: 99,
+            },
+            ClusterMsg::Release {
+                job: n("/obj/big"),
+                node: n("/r/a"),
+            },
         ] {
             assert_eq!(ClusterMsg::decode(m.encode()).unwrap(), m);
         }
