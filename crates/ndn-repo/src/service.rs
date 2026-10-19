@@ -421,11 +421,18 @@ mod tests {
             .send(InterestBuilder::new(pub_name.clone()).build())
             .await
             .unwrap();
-        let reply = tokio::time::timeout(Duration::from_secs(2), from_svc.recv())
-            .await
-            .expect("no serve reply")
-            .expect("closed");
-        let data = Data::decode(reply).unwrap();
+        // Joining the group also announces it (SVS sends a Sync Interest on
+        // join), so the reply is the first Data the service sends.
+        let data = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let wire = from_svc.recv().await.expect("closed");
+                if let Ok(data) = Data::decode(wire) {
+                    break data;
+                }
+            }
+        })
+        .await
+        .expect("no serve reply");
         assert_eq!(*data.name, pub_name);
         assert_eq!(data.content().unwrap().as_ref(), b"the-paper");
     }
