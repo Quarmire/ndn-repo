@@ -7,7 +7,9 @@
 //! Usage:
 //!   ndn-repo [--socket <path>] [--prefix <name>] [--store <dir>] [--group <name>]...
 //!
-//! Defaults: socket `/run/nfd/nfd.sock`, prefix `/repo`, store `./repo-data`.
+//! Defaults: socket [`ndn_app::DEFAULT_FACE_SOCKET`] (where the forwarder
+//! takes app faces unless configured otherwise), prefix `/repo`, store
+//! `./repo-data`.
 //! Each `--group` is joined at startup; further groups join via `SyncJoin`.
 
 use std::sync::Arc;
@@ -100,7 +102,7 @@ struct Args {
 }
 
 fn parse_args() -> anyhow::Result<Args> {
-    let mut socket = "/run/nfd/nfd.sock".to_string();
+    let mut socket = ndn_app::DEFAULT_FACE_SOCKET.to_string();
     let mut prefix = "/repo".to_string();
     let mut store_dir = "./repo-data".to_string();
     let mut groups = Vec::new();
