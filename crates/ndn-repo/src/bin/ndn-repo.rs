@@ -11,6 +11,18 @@
 //! takes app faces unless configured otherwise), prefix `/repo`, store
 //! `./repo-data`.
 //! Each `--group` is joined at startup; further groups join via `SyncJoin`.
+//!
+//! Holder mode:
+//!   ndn-repo hold --device <D> --pib <dir> --socket <fwd.sock> --store <dir>
+//!                 [--hold-for <ns>]... [--erasure <k>/<n>] [--sync-interval-ms <N>]
+//!
+//! Runs device `<D>`'s data layer (`ndn_data::Device`) as a custody holder
+//! for each `--hold-for` namespace (default: the device's own), signing with
+//! `<D>`'s key from the PIB and keeping its packets in a
+//! [`HolderStore`](ndn_repo::held::HolderStore) at `<store>` (held data
+//! erasure-coded `k/n`, default 2/3). Prints one line
+//! `{"ready":{"device":"<D>","writer":"<key>"}}` on stdout once the layer
+//! runs, logs on stderr, and stops on SIGTERM, SIGINT or end of stdin.
 
 use std::sync::Arc;
 
@@ -22,6 +34,12 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|a| a == "hold") {
+        args.next();
+        return hold::run(args).await;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -152,4 +170,207 @@ fn parse_args() -> anyhow::Result<Args> {
         store_dir,
         groups,
     })
+}
+
+/// `ndn-repo hold`: an `ndn_data::Device` custody holder over a
+/// [`HolderStore`]. Startup mirrors ndn-fwd's `ndn-data` tool.
+mod hold {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use anyhow::{Context, anyhow, bail};
+    use ndn_app::{IpcConnection, Node, demux_cert_fetcher};
+    use ndn_data::{Config, Device, NextStep, Transport};
+    use ndn_ipc::ForwarderClient;
+    use ndn_packet::Name;
+    use ndn_repo::held::{Erasure, HolderStore};
+    use ndn_security::{CertCache, FilePib, SecurityManager, Validator};
+    use tokio::signal::unix::{SignalKind, signal};
+
+    /// Longest certificate chain the validator walks (device → CA → root).
+    const MAX_CHAIN: usize = 5;
+
+    const USAGE: &str = "ndn-repo hold --device <D> --pib <dir> --socket <fwd.sock> --store <dir> \
+                         [--hold-for <ns>]... [--erasure <k>/<n>] [--sync-interval-ms <N>]";
+
+    struct Args {
+        device: Name,
+        pib: String,
+        socket: String,
+        store: PathBuf,
+        hold_for: Vec<Name>,
+        erasure: Erasure,
+        sync_interval: Option<Duration>,
+    }
+
+    fn parse(mut it: impl Iterator<Item = String>) -> anyhow::Result<Args> {
+        let (mut device, mut pib, mut store) = (None, None, None);
+        let mut socket = ndn_app::DEFAULT_FACE_SOCKET.to_string();
+        let mut hold_for = Vec::new();
+        let mut erasure = Erasure::default();
+        let mut sync_interval = None;
+        while let Some(arg) = it.next() {
+            let mut value = || {
+                it.next()
+                    .ok_or_else(|| anyhow!("{arg} needs a value; usage: {USAGE}"))
+            };
+            match arg.as_str() {
+                "--device" => {
+                    let v = value()?;
+                    device = Some(
+                        v.parse::<Name>()
+                            .map_err(|e| anyhow!("--device {v:?}: {e}"))?,
+                    );
+                }
+                "--pib" => pib = Some(value()?),
+                "--socket" => socket = value()?,
+                "--store" => store = Some(PathBuf::from(value()?)),
+                "--hold-for" => {
+                    let v = value()?;
+                    hold_for.push(
+                        v.parse::<Name>()
+                            .map_err(|e| anyhow!("--hold-for {v:?}: {e}"))?,
+                    );
+                }
+                "--erasure" => {
+                    let v = value()?;
+                    erasure = v.parse().map_err(|e| anyhow!("--erasure: {e}"))?;
+                }
+                "--sync-interval-ms" => {
+                    let v = value()?;
+                    let ms: u64 = v.parse().map_err(|_| {
+                        anyhow!("--sync-interval-ms {v:?}: give a whole number of milliseconds")
+                    })?;
+                    sync_interval = Some(Duration::from_millis(ms));
+                }
+                "-h" | "--help" => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(0);
+                }
+                other => bail!("unknown argument {other:?}; usage: {USAGE}"),
+            }
+        }
+        let missing = |flag: &str| anyhow!("{flag} is required; usage: {USAGE}");
+        Ok(Args {
+            device: device.ok_or_else(|| missing("--device"))?,
+            pib: pib.ok_or_else(|| missing("--pib"))?,
+            socket,
+            store: store.ok_or_else(|| missing("--store"))?,
+            hold_for,
+            erasure,
+            sync_interval,
+        })
+    }
+
+    pub async fn run(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .init();
+        let cli = parse(args)?;
+        let device = cli.device;
+
+        let pib = FilePib::open(&cli.pib).map_err(|e| anyhow!("open PIB {}: {e}", cli.pib))?;
+        let keys = SecurityManager::from_pib(&pib, &device).map_err(|e| {
+            anyhow!(
+                "PIB {}: {e}; enroll this device as {device} first (`ndn-fwd enroll`)",
+                cli.pib
+            )
+        })?;
+        ndn_cert::load_persisted_contexts(pib.root(), keys.keyring())
+            .map_err(|e| anyhow!("PIB {}: {e}", cli.pib))?;
+        let keys = Arc::new(keys);
+
+        let store = HolderStore::open(&cli.store, device.clone(), cli.erasure)
+            .map_err(|e| anyhow!("store {}: {e}", cli.store.display()))?;
+
+        let node = Node::connect(&cli.socket)
+            .await
+            .map_err(|e| anyhow!("connect to the forwarder at {}: {e}", cli.socket))?;
+        let sync = ForwarderClient::connect(&cli.socket)
+            .await
+            .map_err(|e| anyhow!("connect to the forwarder at {}: {e}", cli.socket))?;
+        let sync = Arc::new(IpcConnection::new(sync));
+
+        let cache = Arc::new(CertCache::new());
+        let fetcher = demux_cert_fetcher(node.demux(), Arc::clone(&cache));
+        let validator = Arc::new(Validator::with_keyring(
+            Arc::clone(keys.keyring()),
+            cache,
+            Some(fetcher),
+            MAX_CHAIN,
+        ));
+
+        let mut config = Config::new();
+        config.hold_for = if cli.hold_for.is_empty() {
+            // The device's own namespace: that of the trust context governing
+            // its name. None governs it: `Device::start` refuses and says why.
+            let ns = validator.keyring().context_for(&device).namespace().clone();
+            if ns.is_empty() { Vec::new() } else { vec![ns] }
+        } else {
+            cli.hold_for
+        };
+        if let Some(interval) = cli.sync_interval {
+            config.svs.sync_interval = interval;
+        }
+        let hold_for = config.hold_for.clone();
+        let layer = Device::start(
+            Transport { node, sync },
+            device.clone(),
+            keys,
+            validator,
+            Arc::new(store),
+            config,
+        )
+        .await
+        .map_err(|e| anyhow!("{device}: {e} (next: {})", next_step(e.next())))?;
+        tracing::info!(
+            %device, store = %cli.store.display(), erasure = %cli.erasure, ?hold_for,
+            "ndn-repo holding"
+        );
+        println!(
+            "{}",
+            serde_json::json!({"ready": {
+                "device": device.to_string(),
+                "writer": layer.writer().key().to_string(),
+            }})
+        );
+
+        // Until SIGTERM, SIGINT or end of stdin. Stdin is read on a plain
+        // thread: a blocking read there cannot hold up the runtime's shutdown.
+        let mut term = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
+        let (eof_tx, eof_rx) = tokio::sync::oneshot::channel::<()>();
+        std::thread::spawn(move || {
+            let mut sink = std::io::sink();
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut sink);
+            let _ = eof_tx.send(());
+        });
+        tokio::select! {
+            _ = term.recv() => tracing::info!("SIGTERM"),
+            _ = tokio::signal::ctrl_c() => tracing::info!("SIGINT"),
+            _ = eof_rx => tracing::info!("end of stdin"),
+        }
+        layer.shutdown();
+        tracing::info!(%device, "ndn-repo hold stopped");
+        Ok(())
+    }
+
+    fn next_step(n: NextStep) -> &'static str {
+        match n {
+            NextStep::None => "nothing: the answer is final",
+            NextStep::RetryLater => "ask again later, unchanged: no path or holder answered",
+            NextStep::AskOwner => {
+                "ask the collection's owner for membership, a reading key or re-admission"
+            }
+            NextStep::UseOwnerDevice => "do it on a device that holds the owner's key",
+            NextStep::EditInstead => "remove it with an edit to the collection: it is not yours",
+            NextStep::FixLocal => "fix this device: its storage or its keys",
+            NextStep::FixName => "ask again with a well-formed name: the message says how",
+            NextStep::HoldFirst => "ask holders to keep it first (hold), and audit them",
+        }
+    }
 }

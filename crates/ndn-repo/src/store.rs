@@ -79,6 +79,27 @@ mod fjall_store {
                 }
             }
         }
+
+        fn scan_under(&self, prefix: &Name, limit: usize) -> Vec<(Name, Bytes)> {
+            match self.0.scan_prefix(&name_key(prefix), limit) {
+                // Keys are `name_key` bytes, the inner component TLVs that
+                // `Name::decode` reads; a key that does not decode is skipped.
+                Ok(v) => v
+                    .into_iter()
+                    .filter_map(|(k, v)| Name::decode(k).ok().map(|n| (n, v)))
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(target: "ndn_repo", %prefix, error = %e, "fjall store scan failed");
+                    Vec::new()
+                }
+            }
+        }
+
+        fn remove(&self, name: &Name) {
+            if let Err(e) = self.0.delete(&name_key(name)) {
+                tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store delete failed");
+            }
+        }
     }
 }
 

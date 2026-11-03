@@ -35,6 +35,10 @@ ndn-ipc-shm   = { path = "../ndn-ext/crates/faces/ndn-ipc-shm" }
 ndn-coding    = { path = "../ndn-radio/crates/coding/ndn-coding", default-features = false }
 ndn-sync      = { path = "../ndn-rs/crates/protocols/ndn-sync" }
 ndn-storage   = { path = "../ndn-rs/crates/core/ndn-storage", default-features = false }
+# The data layer the `ndn-repo hold` daemon runs as a custody holder, and the
+# trust-context loader it reads the device's PIB with. ndn-data never depends on ndn-repo.
+ndn-data      = { path = "../ndn-rs/crates/app/ndn-data" }
+ndn-cert      = { path = "../ndn-rs/crates/security/ndn-cert" }
 ndn-repo      = { path = "crates/ndn-repo" }
 
 # Core async runtime — individual crates enable only the features they need
@@ -63,6 +67,9 @@ web-time      = "1"
 
 # Logging subscriber (binaries only)
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The `ready` line of `ndn-repo hold` (binaries only)
+serde_json = "1"
 
 # Persistent storage
 fjall = "3"
