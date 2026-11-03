@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { path: ndn-repo }
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: 3f1957e3b94208a301276e32b41fa53b4949a4cb, path: ndn-rs } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: 559605f8e1d369a91b5d790eb9d0b8453672cd3d, path: ndn-rs } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
         with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: f417cabd7010841b650e3ad6e36f7e069affedfc, path: ndn-ext } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
