@@ -14,15 +14,22 @@
 //!
 //! Holder mode:
 //!   ndn-repo hold --device <D> --pib <dir> --socket <fwd.sock> --store <dir>
-//!                 [--hold-for <ns>]... [--erasure <k>/<n>] [--sync-interval-ms <N>]
+//!                 --hold-for <ns>... [--in-namespace] [--erasure <k>/<n>]
+//!                 [--sync-interval-ms <N>]
 //!
 //! Runs device `<D>`'s data layer (`ndn_data::Device`) as a custody holder
-//! for each `--hold-for` namespace (default: the device's own), signing with
+//! for each `--hold-for` namespace (at least one is required), signing with
 //! `<D>`'s key from the PIB and keeping its packets in a
 //! [`HolderStore`](ndn_repo::held::HolderStore) at `<store>` (held data
 //! erasure-coded `k/n`, default 2/3). Prints one line
 //! `{"ready":{"device":"<D>","writer":"<key>"}}` on stdout once the layer
 //! runs, logs on stderr, and stops on SIGTERM, SIGINT or end of stdin.
+//!
+//! A holder that must not read what it keeps is enrolled outside the
+//! namespaces it holds for: a device in the namespace it holds for is a
+//! device of that person — of every audience `Person(<ns>)` admits, and able
+//! to sign the owner's records. Holding for the device's own namespace is
+//! therefore refused unless `--in-namespace` accepts exactly that.
 
 use std::sync::Arc;
 
@@ -192,7 +199,8 @@ mod hold {
     const MAX_CHAIN: usize = 5;
 
     const USAGE: &str = "ndn-repo hold --device <D> --pib <dir> --socket <fwd.sock> --store <dir> \
-                         [--hold-for <ns>]... [--erasure <k>/<n>] [--sync-interval-ms <N>]";
+                         --hold-for <ns>... [--in-namespace] [--erasure <k>/<n>] \
+                         [--sync-interval-ms <N>]";
 
     struct Args {
         device: Name,
@@ -200,6 +208,8 @@ mod hold {
         socket: String,
         store: PathBuf,
         hold_for: Vec<Name>,
+        /// The operator accepts holding for the device's own namespace.
+        in_namespace: bool,
         erasure: Erasure,
         sync_interval: Option<Duration>,
     }
@@ -208,6 +218,7 @@ mod hold {
         let (mut device, mut pib, mut store) = (None, None, None);
         let mut socket = ndn_app::DEFAULT_FACE_SOCKET.to_string();
         let mut hold_for = Vec::new();
+        let mut in_namespace = false;
         let mut erasure = Erasure::default();
         let mut sync_interval = None;
         while let Some(arg) = it.next() {
@@ -233,6 +244,7 @@ mod hold {
                             .map_err(|e| anyhow!("--hold-for {v:?}: {e}"))?,
                     );
                 }
+                "--in-namespace" => in_namespace = true,
                 "--erasure" => {
                     let v = value()?;
                     erasure = v.parse().map_err(|e| anyhow!("--erasure: {e}"))?;
@@ -252,15 +264,43 @@ mod hold {
             }
         }
         let missing = |flag: &str| anyhow!("{flag} is required; usage: {USAGE}");
+        if hold_for.is_empty() {
+            bail!(
+                "--hold-for is required: without it the holder would hold for its own \
+                 namespace, of whose audience it is, and read what it keeps; name the \
+                 namespaces to hold for (`--hold-for <ns>`, repeatable); usage: {USAGE}"
+            );
+        }
         Ok(Args {
             device: device.ok_or_else(|| missing("--device"))?,
             pib: pib.ok_or_else(|| missing("--pib"))?,
             socket,
             store: store.ok_or_else(|| missing("--store"))?,
             hold_for,
+            in_namespace,
             erasure,
             sync_interval,
         })
+    }
+
+    /// Refuse to hold for `own`, the device's own namespace, unless the
+    /// operator accepted it (`--in-namespace`): a holder in the namespace it
+    /// holds for is a device of that person, so it reads what it keeps and
+    /// can sign the owner's records.
+    fn refuse_own_namespace(
+        own: &Name,
+        hold_for: &[Name],
+        in_namespace: bool,
+    ) -> anyhow::Result<()> {
+        if in_namespace || own.is_empty() || !hold_for.contains(own) {
+            return Ok(());
+        }
+        bail!(
+            "--hold-for {own}: {own} is this device's own namespace, so holding for it makes \
+             the device of every audience `Person({own})` admits (it reads what it keeps) and \
+             able to sign {own}'s owner records; enroll the holder in a namespace of its own \
+             and pass `--hold-for {own}`, or pass `--in-namespace` to accept it"
+        )
     }
 
     pub async fn run(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
@@ -283,6 +323,16 @@ mod hold {
         })?;
         ndn_cert::load_persisted_contexts(pib.root(), keys.keyring())
             .map_err(|e| anyhow!("PIB {}: {e}", cli.pib))?;
+        // The device's own namespace: that of the trust context governing
+        // its name (none governs it: `Device::start` refuses and says why).
+        let own = keys.keyring().context_for(&device).namespace().clone();
+        refuse_own_namespace(&own, &cli.hold_for, cli.in_namespace)?;
+        if cli.in_namespace && cli.hold_for.contains(&own) {
+            tracing::warn!(
+                %device, namespace = %own,
+                "holding for the device's own namespace (--in-namespace): it reads what it keeps and can sign the owner's records"
+            );
+        }
         let keys = Arc::new(keys);
 
         let store = HolderStore::open(&cli.store, device.clone(), cli.erasure)
@@ -306,14 +356,7 @@ mod hold {
         ));
 
         let mut config = Config::new();
-        config.hold_for = if cli.hold_for.is_empty() {
-            // The device's own namespace: that of the trust context governing
-            // its name. None governs it: `Device::start` refuses and says why.
-            let ns = validator.keyring().context_for(&device).namespace().clone();
-            if ns.is_empty() { Vec::new() } else { vec![ns] }
-        } else {
-            cli.hold_for
-        };
+        config.hold_for = cli.hold_for;
         if let Some(interval) = cli.sync_interval {
             config.svs.sync_interval = interval;
         }
@@ -371,6 +414,46 @@ mod hold {
             NextStep::FixLocal => "fix this device: its storage or its keys",
             NextStep::FixName => "ask again with a well-formed name: the message says how",
             NextStep::HoldFirst => "ask holders to keep it first (hold), and audit them",
+            NextStep::FixRequest => {
+                "ask again as the error says: the request, as given, asks for something no \
+                 device does (a prune past the log, too few holders)"
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn args(list: &[&str]) -> impl Iterator<Item = String> {
+            list.iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
+
+        #[test]
+        fn a_holder_names_the_namespaces_it_holds_for() {
+            let base = ["--device", "/ph/member/repo", "--pib", "p", "--store", "s"];
+            assert!(
+                parse(args(&base)).is_err(),
+                "without --hold-for a holder would hold for its own namespace, of whose \
+                 audience it is: it would read the sealed data it keeps"
+            );
+            let mut named = base.to_vec();
+            named.extend(["--hold-for", "/ph"]);
+            let ph: Name = "/ph".parse().unwrap();
+            assert_eq!(parse(args(&named)).unwrap().hold_for, vec![ph]);
+        }
+
+        #[test]
+        fn holding_for_the_own_namespace_needs_consent() {
+            let (ph, other): (Name, Name) = ("/ph".parse().unwrap(), "/kin".parse().unwrap());
+            let refused = refuse_own_namespace(&ph, &[other.clone(), ph.clone()], false)
+                .expect_err("a holder in /ph holding for /ph is of /ph's audience");
+            assert!(refused.to_string().contains("--in-namespace"), "{refused}");
+            assert!(refuse_own_namespace(&ph, std::slice::from_ref(&ph), true).is_ok());
+            assert!(refuse_own_namespace(&ph, &[other], false).is_ok());
         }
     }
 }
