@@ -430,6 +430,13 @@ impl DataStore for ErasureStore {
         self.rebuild(name, &self.records(name))
     }
 
+    /// Whether at least `k` stripes hold a shard of `name`, the shards
+    /// [`get`](DataStore::get) would rebuild it from — looked up, not read,
+    /// checked or decoded. A shard gone bad is found by a read (an audit).
+    fn contains(&self, name: &Name) -> bool {
+        self.stripes.iter().filter(|s| s.contains(name)).count() >= self.erasure.k as usize
+    }
+
     fn find_under(&self, prefix: &Name) -> Option<Bytes> {
         self.scan_under(prefix, 1)
             .into_iter()
@@ -543,6 +550,14 @@ impl DataStore for HolderStore {
             self.own.get(name)
         } else {
             self.held.get(name)
+        }
+    }
+
+    fn contains(&self, name: &Name) -> bool {
+        if self.is_own(name) {
+            self.own.contains(name)
+        } else {
+            self.held.contains(name)
         }
     }
 
@@ -718,6 +733,37 @@ mod tests {
     }
 
     #[test]
+    fn contains_agrees_with_get() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = n("/ph/member/repo");
+        let s = HolderStore::open(dir.path(), device, Erasure::default()).unwrap();
+        let (own, held) = (n("/ph/member/repo/32=log/x"), n("/ph/member/phone/p/1"));
+        let (removed, never) = (n("/ph/member/phone/p/2"), n("/ph/member/phone/p/3"));
+        s.insert(own.clone(), wire(1, 10));
+        s.insert(held.clone(), wire(2, 700));
+        s.insert(removed.clone(), wire(3, 700));
+        s.remove(&removed);
+        // A held packet with one stripe lost is still there; with two, gone.
+        let (thinned, lost) = (n("/ph/member/phone/p/4"), n("/ph/member/phone/p/5"));
+        s.insert(thinned.clone(), wire(4, 700));
+        s.insert(lost.clone(), wire(5, 700));
+        s.held().stripes[0].remove(&thinned);
+        s.held().stripes[0].remove(&lost);
+        s.held().stripes[1].remove(&lost);
+        for (name, present) in [
+            (&own, true),
+            (&held, true),
+            (&thinned, true),
+            (&removed, false),
+            (&never, false),
+            (&lost, false),
+        ] {
+            assert_eq!(s.contains(name), present, "{name}");
+            assert_eq!(s.get(name).is_some(), present, "{name}");
+        }
+    }
+
+    #[test]
     fn scan_is_in_name_order_across_stripes() {
         let dir = tempfile::tempdir().unwrap();
         let s = ErasureStore::open(dir.path(), Erasure::default()).unwrap();
@@ -757,12 +803,14 @@ mod tests {
             s.insert(other.clone(), wire(2, 10));
             assert!(s.own().get(&other).is_none());
             assert!(s.held().get(&own).is_none());
+            // Merged in NDN canonical order: the shorter component first,
+            // `repo` (4 octets) before `phone` (5).
             assert_eq!(
                 s.scan_under(&n("/ph"), 0)
                     .into_iter()
                     .map(|(n, _)| n)
                     .collect::<Vec<_>>(),
-                vec![other.clone(), own.clone()]
+                vec![own.clone(), other.clone()]
             );
         }
         assert!(matches!(

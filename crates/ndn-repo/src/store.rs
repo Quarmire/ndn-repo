@@ -67,6 +67,17 @@ mod fjall_store {
             }
         }
 
+        /// A key lookup: the value is not read.
+        fn contains(&self, name: &Name) -> bool {
+            match self.0.contains(&name_key(name)) {
+                Ok(present) => present,
+                Err(e) => {
+                    tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store lookup failed");
+                    false
+                }
+            }
+        }
+
         fn find_under(&self, prefix: &Name) -> Option<Bytes> {
             // Prefix scan: keys are sorted by NDN canonical order, so the
             // lexicographically-smallest descendant is the answer to a
