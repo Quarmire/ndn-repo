@@ -10,9 +10,10 @@ classification = "extension"
 
 [features]
 # Durable on-disk DataStore backend (native). On by default; disable for a
-# target-agnostic, codec-only build (e.g. wasm).
+# target-agnostic, codec-only build (e.g. wasm). `FjallStore` writes and syncs
+# through ndn-sync's `BackendStore` (group commit, sticky write failures).
 default = ["fjall-store"]
-fjall-store = ["dep:fjall", "dep:ndn-storage"]
+fjall-store = ["dep:fjall", "dep:ndn-storage", "ndn-sync/store-fjall"]
 # A custody holder's storage (`held`): its own names in a FjallStore, what it
 # holds for others erasure-coded across stripe stores (ndn-coding's K-of-N codec).
 held = ["fjall-store", "dep:ndn-coding", "dep:sha2"]

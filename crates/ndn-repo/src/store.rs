@@ -7,7 +7,12 @@
 //! The on-disk engine + name→key codec are **not** hand-rolled here: they come
 //! from ndn-rs's `ndn-storage` substrate. `FjallStore` is a thin bridge from
 //! `ndn_storage::FjallBackend` (consumed through its **synchronous** facet, so
-//! the `DataStore` path needs no async runtime) to `ndn_sync::DataStore`.
+//! the `DataStore` path needs no async runtime) to `ndn_sync::DataStore`. Its
+//! writes and its durability barrier are `ndn_sync`'s `BackendStore`: a write
+//! that returned survives `kill -9`, one before a returned
+//! [`sync`](ndn_sync::DataStore::sync) survives a power loss, `sync` is a group
+//! commit (one journal fsync for all concurrent callers), and a failed write
+//! fails every later `sync`.
 
 #[cfg(feature = "fjall-store")]
 pub use fjall_store::FjallStore;
@@ -23,26 +28,37 @@ mod fjall_store {
     // directly — `DataStore` is sync, so we drive the store without any async.
     use ndn_storage::{FjallBackend, SyncBackend, name_key};
     use ndn_sync::DataStore;
+    use ndn_sync::store::BackendStore;
 
     /// On-disk [`DataStore`] backed by [`ndn_storage::FjallBackend`] (fjall's LSM
     /// key-value engine). Stores each Data packet's full wire under its name, so
     /// the repo re-serves it verbatim across process restarts.
-    pub struct FjallStore(FjallBackend);
+    pub struct FjallStore(BackendStore<FjallBackend>);
 
     impl FjallStore {
         /// Open (or create) a repo store rooted at `path`.
         pub fn open(path: impl AsRef<std::path::Path>) -> fjall::Result<Self> {
-            Ok(Self(FjallBackend::open(path)?))
+            Ok(Self(BackendStore::new(FjallBackend::open(path)?)))
+        }
+
+        fn backend(&self) -> &FjallBackend {
+            self.0.backend()
         }
 
         /// Number of stored Data packets (full scan — diagnostics/tests). The
         /// empty prefix matches every key.
         pub fn len(&self) -> usize {
-            self.0.scan_prefix(&[], 0).map(|v| v.len()).unwrap_or(0)
+            self.backend()
+                .scan_prefix(&[], 0)
+                .map(|v| v.len())
+                .unwrap_or(0)
         }
 
         pub fn is_empty(&self) -> bool {
-            self.0.first_under(&[]).map(|o| o.is_none()).unwrap_or(true)
+            self.backend()
+                .first_under(&[])
+                .map(|o| o.is_none())
+                .unwrap_or(true)
         }
     }
 
@@ -51,14 +67,14 @@ mod fjall_store {
     // silently swallowed (the whole point of the fallible `ndn_storage` API): a disk
     // failure surfaces in the logs instead of looking like missing data.
     impl DataStore for FjallStore {
+        /// `BackendStore`'s: a failed write is logged and fails every later
+        /// [`sync`](DataStore::sync).
         fn insert(&self, name: Name, wire: Bytes) {
-            if let Err(e) = self.0.put(&name_key(&name), wire) {
-                tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store insert failed");
-            }
+            self.0.insert(name, wire)
         }
 
         fn get(&self, name: &Name) -> Option<Bytes> {
-            match self.0.get(&name_key(name)) {
+            match self.backend().get(&name_key(name)) {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store get failed");
@@ -69,7 +85,7 @@ mod fjall_store {
 
         /// A key lookup: the value is not read.
         fn contains(&self, name: &Name) -> bool {
-            match self.0.contains(&name_key(name)) {
+            match self.backend().contains(&name_key(name)) {
                 Ok(present) => present,
                 Err(e) => {
                     tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store lookup failed");
@@ -82,7 +98,7 @@ mod fjall_store {
             // Prefix scan: keys are sorted by NDN canonical order, so the
             // lexicographically-smallest descendant is the answer to a
             // CanBePrefix Interest.
-            match self.0.first_under(&name_key(prefix)) {
+            match self.backend().first_under(&name_key(prefix)) {
                 Ok(o) => o.map(|(_, v)| v),
                 Err(e) => {
                     tracing::warn!(target: "ndn_repo", %prefix, error = %e, "fjall store scan failed");
@@ -92,7 +108,7 @@ mod fjall_store {
         }
 
         fn scan_under(&self, prefix: &Name, limit: usize) -> Vec<(Name, Bytes)> {
-            match self.0.scan_prefix(&name_key(prefix), limit) {
+            match self.backend().scan_prefix(&name_key(prefix), limit) {
                 // Keys are `name_key` bytes, the inner component TLVs that
                 // `Name::decode` reads; a key that does not decode is skipped.
                 Ok(v) => v
@@ -107,9 +123,12 @@ mod fjall_store {
         }
 
         fn remove(&self, name: &Name) {
-            if let Err(e) = self.0.delete(&name_key(name)) {
-                tracing::warn!(target: "ndn_repo", %name, error = %e, "fjall store delete failed");
-            }
+            self.0.remove(name)
+        }
+
+        /// `BackendStore`'s group commit over fjall's journal fsync.
+        fn sync(&self) -> std::io::Result<()> {
+            self.0.sync()
         }
     }
 }

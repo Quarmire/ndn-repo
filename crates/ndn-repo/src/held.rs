@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use bytes::Bytes;
 use ndn_coding::{CodingError, Decoder, Encoder};
@@ -202,6 +202,9 @@ pub struct ErasureStore {
     /// Serialises writes (insert, remove, repair), so a repair never writes
     /// shards of a wire an insert has just replaced.
     writes: Mutex<()>,
+    /// The first insert refused (not codable): once set, every
+    /// [`sync`](DataStore::sync) fails, as for a stripe's lost write.
+    refused: OnceLock<String>,
 }
 
 impl ErasureStore {
@@ -218,6 +221,7 @@ impl ErasureStore {
             erasure,
             stripes,
             writes: Mutex::new(()),
+            refused: OnceLock::new(),
         })
     }
 
@@ -411,12 +415,19 @@ impl DataStore for ErasureStore {
     fn insert(&self, name: Name, wire: Bytes) {
         if u32::try_from(wire.len()).is_err() {
             tracing::warn!(target: "ndn_repo", %name, len = wire.len(), "a held packet over 4 GiB cannot be erasure-coded; not stored");
+            let _ = self.refused.set(format!(
+                "{name} ({} octets) was not stored: over 4 GiB cannot be erasure-coded",
+                wire.len()
+            ));
             return;
         }
         let records = match self.encode(&wire) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(target: "ndn_repo", %name, error = %e, "cannot erasure-code a held packet; not stored");
+                let _ = self.refused.set(format!(
+                    "{name} was not stored: erasure coding failed ({e})"
+                ));
                 return;
             }
         };
@@ -456,6 +467,27 @@ impl DataStore for ErasureStore {
             stripe.remove(name);
         }
     }
+
+    /// Syncs every stripe (each a group commit), and fails when any stripe
+    /// fails — naming it — or an insert was refused: a shard or packet this
+    /// store accepted may then not be kept.
+    fn sync(&self) -> std::io::Result<()> {
+        let mut first = self.refused.get().map(|what| {
+            std::io::Error::other(format!(
+                "held store: {what}, so a packet given to it is not kept and durability cannot \
+                 be promised; fix that cause (a packet it cannot code), then restart the \
+                 holder to clear this"
+            ))
+        });
+        for (i, stripe) in self.stripes.iter().enumerate() {
+            if let Err(e) = stripe.sync() {
+                first.get_or_insert_with(|| {
+                    std::io::Error::new(e.kind(), format!("held stripe {i}: {e}"))
+                });
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
 }
 
 /// A holder device's [`DataStore`]: its own names in a plain store, what it
@@ -493,12 +525,15 @@ impl HolderStore {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::write(&record, format!("{erasure}\n")).map_err(|source| {
-                    HeldError::Io {
+                // Atomically (temp file, fsync, rename), then the directory
+                // fsynced: a power loss leaves no record or the whole one,
+                // never a torn one the next open would refuse.
+                ndn_security::secure_fs::write_private(&record, format!("{erasure}\n"))
+                    .and_then(|()| std::fs::File::open(dir).and_then(|d| d.sync_all()))
+                    .map_err(|source| HeldError::Io {
                         path: record.clone(),
                         source,
-                    }
-                })?;
+                    })?;
             }
             Err(source) => {
                 return Err(HeldError::Io {
@@ -604,6 +639,17 @@ impl DataStore for HolderStore {
         } else {
             self.held.remove(name)
         }
+    }
+
+    /// Syncs both halves — the own store and every held stripe — and fails
+    /// when either does (the own half's error first).
+    fn sync(&self) -> std::io::Result<()> {
+        let own = self
+            .own
+            .sync()
+            .map_err(|e| std::io::Error::new(e.kind(), format!("own store: {e}")));
+        let held = self.held.sync();
+        own.and(held)
     }
 }
 
