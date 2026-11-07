@@ -418,6 +418,10 @@ mod hold {
                 "ask again as the error says: the request, as given, asks for something no \
                  device does (a prune past the log, too few holders)"
             }
+            NextStep::UpdateProgram => {
+                "run a program that knows the collection's merge rule: this one holds its \
+                 versions but reads them under no other rule"
+            }
         }
     }
 
