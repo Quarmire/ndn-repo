@@ -422,10 +422,6 @@ mod hold {
                 "run a program that knows the collection's merge rule: this one holds its \
                  versions but reads them under no other rule"
             }
-            NextStep::SetPolicy => {
-                "change the answer policy, or ask whoever sets it: name the signer as a \
-                 provider of the function, or trust it for pure answers"
-            }
         }
     }
 
