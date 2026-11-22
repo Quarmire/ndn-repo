@@ -20,11 +20,9 @@
 //! (replication, capacity-aware placement, heartbeat failover — cf.
 //! `a-thieme/repo`) is a coordination layer above this single-node core.
 //!
-//! **Custody holder** (feature `held`, daemon `ndn-repo hold`): the repo runs
-//! an `ndn_data::Device` that keeps other devices' data under custody leases,
-//! over a [`held::HolderStore`] — its own names plain, what it holds for
-//! others erasure-coded across stripe stores so losing up to `n - k` stripes
-//! loses nothing.
+//! **Erasure-coded storage** (feature `held`): [`held::HolderStore`] keeps a
+//! device's own names plain and what it keeps for others erasure-coded across
+//! stripe stores, so losing up to `n - k` stripes loses nothing.
 
 #[cfg(feature = "held")]
 pub mod held;

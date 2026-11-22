@@ -17,24 +17,16 @@ fjall-store = ["dep:fjall", "dep:ndn-storage", "ndn-sync/store-fjall"]
 # A custody holder's storage (`held`): its own names in a FjallStore, what it
 # holds for others erasure-coded across stripe stores (ndn-coding's K-of-N codec).
 held = ["fjall-store", "dep:ndn-coding", "dep:sha2"]
-# The runnable `ndn-repo` daemon (Unix-socket IPC to a forwarder), including
-# `ndn-repo hold` (an ndn-data custody holder over `held` storage). Off by
+# The runnable `ndn-repo` daemon (Unix-socket IPC to a forwarder). Off by
 # default so the library stays light; build with `--features bin`.
 bin = [
     "fjall-store",
-    "held",
     "dep:ndn-app",
     "dep:ndn-ipc",
     "dep:ndn-ipc-shm",
-    "dep:ndn-data",
-    "dep:ndn-cert",
-    "dep:serde_json",
     "dep:anyhow",
     "dep:tracing-subscriber",
     "tokio/rt-multi-thread",
-    "tokio/signal",
-    "tokio/io-std",
-    "tokio/io-util",
 ]
 
 [dependencies]
@@ -59,9 +51,6 @@ ndn-app            = { workspace = true, optional = true }
 ndn-ipc            = { workspace = true, optional = true }
 ndn-ipc-shm        = { workspace = true, optional = true }
 anyhow             = { workspace = true, optional = true }
-ndn-data           = { workspace = true, optional = true }
-ndn-cert           = { workspace = true, optional = true }
-serde_json         = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 
 [[bin]]
