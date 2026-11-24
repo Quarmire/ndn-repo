@@ -43,6 +43,12 @@ follower publishes no vector entry, and holds no read key unless its person
 is a reader of the space, so what it carries of a sealed space stays closed to
 it. It is not a member: it cannot write to the space.
 
+**How readers find it.** A follower publishes no vector entry, so no member
+vouches for it: a reader finds this follower only when its host lists it as a
+holder, by the repo's device name `<D>` (`--holder <D>` for the `ndn-heap`
+tool, `ndn_heap::Config.holders`). It is then asked for held copies after the
+members that vouch, and what it gives is verified as the writer's own.
+
 On start it prints one line on stdout,
 `{"ready":{"device":"<D>","writer":"<key name>"}}`; logs go to stderr, and
 every 10 seconds one line per space with the entries held (a warning where it

@@ -129,7 +129,9 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> anyhow::Result<Args> {
 const HELP: &str = "A follower verifies what it stores: hold (adopt) the trust context of each \
 space's owner in --pib (`ndn-fwd adopt`). With none, the owner's entries stay Pending(adoption) \
 and nothing is stored; the report says so. A follower publishes no vector entry and holds no \
-read key unless its person is a reader.";
+read key unless its person is a reader. A reader finds this follower only when its host lists it \
+as a holder (this device's name <D>, e.g. `--holder <D>` for the `ndn-heap` tool; \
+`ndn_heap::Config.holders`), because a follower publishes no vector entry.";
 
 /// What to do about an error of the heap layer, in words.
 pub fn next_step(n: NextStep) -> &'static str {
