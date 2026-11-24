@@ -23,6 +23,13 @@
 //! **Erasure-coded storage** (feature `held`): [`held::HolderStore`] keeps a
 //! device's own names plain and what it keeps for others erasure-coded across
 //! stripe stores, so losing up to `n - k` stripes loses nothing.
+//!
+//! **Follower** (daemon `ndn-repo follow`, feature `bin`): runs an
+//! `ndn_heap::Node` that carries heap spaces: it joins their sync groups,
+//! verifies what their members write, stores it in a plain fjall-backed
+//! `ndn_sync::BackendStore` and serves it, publishing no vector entry. It
+//! stores only what it verifies, so the operator holds the owner's trust
+//! context.
 
 #[cfg(feature = "held")]
 pub mod held;

@@ -11,6 +11,18 @@
 //! takes app faces unless configured otherwise), prefix `/repo`, store
 //! `./repo-data`.
 //! Each `--group` is joined at startup; further groups join via `SyncJoin`.
+//!
+//! Follower:
+//!   ndn-repo follow --device <D> --pib <dir> --socket <fwd.sock> --store <dir>
+//!                   --space <name>... [--sync-interval-ms <N>]
+//!
+//! Runs device `<D>`'s heap layer as a carrier of each `--space`: it verifies,
+//! stores and serves what the space's members write, so the space is there
+//! when they are not. See the `follow` module for what the operator must hold
+//! (the trust context of each space's owner) and what is printed.
+
+#[path = "ndn-repo/follow.rs"]
+mod follow;
 
 use std::sync::Arc;
 
@@ -22,6 +34,12 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|a| a == "follow") {
+        args.next();
+        return follow::run(args).await;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -136,7 +154,8 @@ fn parse_args() -> anyhow::Result<Args> {
             }
             "-h" | "--help" => {
                 eprintln!(
-                    "ndn-repo [--socket <path>] [--prefix <name>] [--store <dir>] [--group <name>]..."
+                    "ndn-repo [--socket <path>] [--prefix <name>] [--store <dir>] [--group <name>]...\n\
+                     ndn-repo follow --help   carry heap spaces (a follower)"
                 );
                 std::process::exit(0);
             }

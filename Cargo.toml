@@ -35,6 +35,12 @@ ndn-ipc-shm   = { path = "../ndn-ext/crates/faces/ndn-ipc-shm" }
 ndn-coding    = { path = "../ndn-radio/crates/coding/ndn-coding", default-features = false }
 ndn-sync      = { path = "../ndn-rs/crates/protocols/ndn-sync" }
 ndn-storage   = { path = "../ndn-rs/crates/core/ndn-storage", default-features = false }
+# The heap layer the `ndn-repo follow` daemon runs as a carrier of spaces, and the
+# trust-context loader it reads the device's PIB with. ndn-heap never depends on ndn-repo.
+ndn-heap      = { path = "../ndn-rs/crates/app/ndn-heap" }
+ndn-cert      = { path = "../ndn-rs/crates/security/ndn-cert" }
+# The follower's test rig carries a namespace's sync group on an in-process forwarder.
+ndn-namespace = { path = "../ndn-rs/crates/security/ndn-namespace" }
 ndn-repo      = { path = "crates/ndn-repo" }
 
 # Core async runtime — individual crates enable only the features they need
@@ -63,6 +69,9 @@ web-time      = "1"
 
 # Logging subscriber (binaries only)
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The `ready` line of `ndn-repo follow` (binaries only)
+serde_json = "1"
 
 # Persistent storage
 fjall = "3"

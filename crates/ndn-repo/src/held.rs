@@ -1,8 +1,8 @@
 //! Storage for a **custody holder**: the device's own state kept plainly,
 //! everything it holds for others erasure-coded across stripes.
 //!
-//! [`HolderStore`] is the [`DataStore`] an `ndn_data::Device` running as a
-//! holder keeps its packets in. It splits by name:
+//! [`HolderStore`] is a [`DataStore`] for a device that keeps other devices'
+//! packets. It splits by name:
 //!
 //! * **own** — names under the device's own name `<D>` (its log, summaries,
 //!   leases) and under `/localhost`: a plain [`FjallStore`] at `<dir>/own`.
