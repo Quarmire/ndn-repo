@@ -19,6 +19,15 @@
 //! vector entry and holds no read key unless its person is a reader, so what
 //! it carries of a sealed space stays closed to it.
 //!
+//! The relays the forwarder uses are told which spaces the follower follows:
+//! for each carried space of an owner other than `<D>`'s namespace the follower
+//! marks the space's sync group (`<owner>/32=sync/<space>`) on the forwarder
+//! (`security/transit`, over one management connection kept open for the run),
+//! and the forwarder's links tell the relays to route exactly that group here
+//! (`ndn-link.md` §5.10), not the owner's other spaces. The forwarder refuses
+//! a follower that is no operator and in none of its `[security]
+//! transit_groups`; the log then says so and the space is carried all the same.
+//!
 //! Prints one line `{"ready":{"device":"<D>","writer":"<key>"}}` on stdout once
 //! the layer runs and carries every space, logs on stderr (one line per space
 //! with the entries held, every [`REPORT_EVERY`]), and stops on SIGTERM, SIGINT
@@ -31,9 +40,9 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
 use ndn_app::{IpcConnection, demux_cert_fetcher};
-use ndn_heap::wire::parse_space_name;
+use ndn_heap::wire::{parse_space_name, sync_group_of};
 use ndn_heap::{Config, Follower, NextStep, Node, Transport};
-use ndn_ipc::ForwarderClient;
+use ndn_ipc::{ForwarderClient, MgmtClient};
 use ndn_packet::Name;
 use ndn_security::{CertCache, FilePib, SecurityManager, Validator};
 use ndn_sync::DataStore;
@@ -170,6 +179,61 @@ fn hint(space: &Name, held: u64) -> Option<String> {
     ))
 }
 
+/// The sync groups of the spaces a follower carries that are another
+/// owner's than `own`, this device's namespace: `<owner>/32=sync/<space>`
+/// (`ndn_heap::wire::sync_group_of`), the group of each space and not the
+/// owner's whole group, which every space of the owner lies under. A space of
+/// the device's own namespace is no following: a relay routes the
+/// namespace's group for the devices it serves.
+fn followed_groups(own: &Name, spaces: &[Name]) -> Vec<Name> {
+    spaces
+        .iter()
+        .filter_map(|space| {
+            let parsed = parse_space_name(space)?;
+            (parsed.owner != *own)
+                .then(|| sync_group_of(space))
+                .flatten()
+        })
+        .collect()
+}
+
+/// Tell the daemon the groups this follower follows, as marks
+/// (`security/transit`) owned by a management connection that is returned and
+/// must be kept open for the whole run: the daemon's links tell the relays
+/// they use to route exactly these groups here (ndn-link.md §5.10), so a
+/// space carried reaches this device through them; the daemon releases the
+/// marks when the connection closes. A daemon that refuses (this host is no
+/// operator or member of its `[security] transit_groups`; it runs no links)
+/// is told in the log, with what to do: the space is carried all the same.
+async fn tell_daemon(socket: &str, groups: &[Name]) -> Option<MgmtClient> {
+    if groups.is_empty() {
+        return None;
+    }
+    let client = match MgmtClient::connect(socket).await {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!(
+                "cannot tell the forwarder at {socket} which spaces this follower follows: {e}; \
+                 the relays it uses route no space group here until it is started again"
+            );
+            return None;
+        }
+    };
+    for group in groups {
+        if let Err(e) = client.security_transit(group, true).await {
+            let why =
+                ndn_ipc::trust_refusal_in(&e).map_or_else(|| e.to_string(), |r| r.to_string());
+            tracing::warn!(
+                %group,
+                "the forwarder did not take the group of a followed space: {why}; run this \
+                 follower as a member of a group in the forwarder's `[security] transit_groups` \
+                 (or as an operator) so the relays it uses route the space's group here"
+            );
+        }
+    }
+    Some(client)
+}
+
 /// The node of a follower and the spaces it carries.
 pub struct Carrying {
     node: Node,
@@ -250,6 +314,7 @@ pub async fn run(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
     ndn_cert::load_persisted_contexts(pib.root(), keys.keyring())
         .map_err(|e| anyhow!("PIB {}: {e}", cli.pib))?;
     let keys = Arc::new(keys);
+    let own = keys.keyring().context_for(&device).namespace().clone();
 
     let store: Arc<dyn DataStore> = Arc::new(
         BackendStore::open_fjall(&cli.store)
@@ -287,6 +352,8 @@ pub async fn run(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
         &cli.spaces,
     )
     .await?;
+    // Held to the end of the run: the daemon releases the marks with it.
+    let _marks = tell_daemon(&cli.socket, &followed_groups(&own, &cli.spaces)).await;
     tracing::info!(
         %device, store = %cli.store.display(), spaces = ?cli.spaces,
         "ndn-repo following"
@@ -384,6 +451,24 @@ mod tests {
         bad.extend(["--space", "/alice/notes"]);
         let refused = parse(args(&bad)).expect_err("/alice/notes has no 32=data component");
         assert!(refused.to_string().contains("32=data"), "{refused}");
+    }
+
+    /// What a follower tells the daemon is the group of each space it carries
+    /// of another owner (`<owner>/32=sync/<space>`): never the owner's whole
+    /// group `<owner>/32=sync`, which the relays would route for every space
+    /// of the owner, and none for a space of the device's own namespace.
+    #[test]
+    fn a_follower_follows_the_groups_of_the_spaces_of_other_owners_only() {
+        let spaces = [
+            n("/alice/32=data/notes"),
+            n("/bob/32=data/a/b"),
+            n("/carol/32=data/mine"),
+        ];
+        assert_eq!(
+            followed_groups(&n("/carol"), &spaces),
+            [n("/alice/32=sync/notes"), n("/bob/32=sync/a/b")]
+        );
+        assert!(followed_groups(&n("/carol"), &[]).is_empty());
     }
 
     #[test]
