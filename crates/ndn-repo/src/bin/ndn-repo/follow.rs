@@ -234,6 +234,15 @@ async fn tell_daemon(socket: &str, groups: &[Name]) -> Option<MgmtClient> {
     Some(client)
 }
 
+/// The certificate cache of the follower's validator: the manager's own, which
+/// `SecurityManager::from_pib` filled from the follower's PIB (every certificate stored for
+/// its key, those of the PIB's other signing identities, and its trust anchors). A grant ask
+/// carries the asker's chain, read from this cache alone (`Judge::chain_of`); a cache that
+/// starts empty sends asks without one, and a granter that fetches nothing refuses them.
+fn follower_cert_cache(keys: &SecurityManager) -> Arc<CertCache> {
+    keys.cert_cache_arc()
+}
+
 /// The node of a follower and the spaces it carries.
 pub struct Carrying {
     node: Node,
@@ -329,7 +338,7 @@ pub async fn run(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
         .map_err(|e| anyhow!("connect to the forwarder at {}: {e}", cli.socket))?;
     let sync = Arc::new(IpcConnection::new(sync));
 
-    let cache = Arc::new(CertCache::new());
+    let cache = follower_cert_cache(&keys);
     let fetcher = demux_cert_fetcher(node.demux(), Arc::clone(&cache));
     let validator = Arc::new(Validator::with_keyring(
         Arc::clone(keys.keyring()),
@@ -407,6 +416,60 @@ mod tests {
 
     fn n(uri: &str) -> Name {
         uri.parse().expect("a valid name")
+    }
+
+    /// The follower's own certificate and its issuer's (a trust anchor of its
+    /// PIB) are held by the validator's cache from the start: a follower whose
+    /// person is a reader asks for epoch keys, the ask carries the asker's
+    /// chain (`Judge::chain_of`, which reads only that cache), and a granter
+    /// that fetches nothing refuses an ask without one.
+    #[tokio::test]
+    async fn the_validators_cache_holds_the_followers_certificate_chain_from_the_pib() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let pib = FilePib::new(dir.path()).expect("a PIB");
+        let (root_key, device_key) = (n("/carol/KEY/root"), n("/carol/repo/KEY/d1"));
+        let root_signer = pib.generate_ed25519(&root_key).expect("root key");
+        let device_signer = pib.generate_ed25519(&device_key).expect("device key");
+
+        let issuer = SecurityManager::new();
+        issuer.register_signer(root_key.clone(), pib.get_signer(&root_key).expect("root"));
+        let day_ms = 24 * 3600 * 1000;
+        let anchor = issuer
+            .issue_self_signed(
+                &root_key,
+                Bytes::copy_from_slice(&root_signer.public_key_bytes()),
+                day_ms,
+            )
+            .expect("anchor");
+        pib.add_trust_anchor(&root_key, &anchor)
+            .expect("anchor stored");
+        let cert = issuer
+            .certify(
+                &device_key,
+                Bytes::copy_from_slice(&device_signer.public_key_bytes()),
+                &root_key,
+                day_ms,
+            )
+            .await
+            .expect("device certificate");
+        pib.store_issued_cert(
+            &device_key,
+            &cert.data_wire().expect("a signed certificate"),
+        )
+        .expect("device certificate stored");
+
+        let keys = SecurityManager::from_pib(&pib, &n("/carol/repo")).expect("keys");
+        let cache = follower_cert_cache(&keys);
+        assert!(
+            cache.get(&Arc::new(cert.name.as_ref().clone())).is_some(),
+            "the cache holds no certificate of the follower's own key {device_key}: its grant \
+             asks carry no chain"
+        );
+        assert!(
+            cache.get(&Arc::new(root_key.clone())).is_some(),
+            "the cache holds no certificate of the issuer {root_key} the PIB trusts: the chain \
+             stops at the follower's"
+        );
     }
 
     fn args(list: &[&str]) -> impl Iterator<Item = String> {
